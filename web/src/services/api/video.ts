@@ -3,6 +3,7 @@ import axios from "axios";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
+import { optimizeVideoReferenceImageDataUrl } from "@/lib/video-reference-preprocess";
 import { buildApiUrl, modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -16,7 +17,7 @@ type SeedanceTask = {
     content?: { video_url?: string; last_frame_url?: string } | null;
 };
 type ApiEnvelope<T> = T | { code?: number; data?: T | null; msg?: string };
-type RequestOptions = { signal?: AbortSignal };
+type RequestOptions = { signal?: AbortSignal; onReferenceImagesOptimized?: (count: number) => void };
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
 export type VideoGenerationTask = { id: string; provider: "openai" | "seedance"; model: string };
@@ -70,7 +71,15 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {
-    const images = await Promise.all(references.slice(0, 7).map((image) => resolveSeedanceImageUrl(config, image)));
+    let optimizedCount = 0;
+    const images = await Promise.all(
+        references.slice(0, 7).map(async (image) => {
+            const result = await resolveVideoReferenceImageUrl(image);
+            if (result.optimized) optimizedCount += 1;
+            return result.url;
+        }),
+    );
+    if (optimizedCount) options?.onReferenceImagesOptimized?.(optimizedCount);
     const videos = await Promise.all(videoReferences.map((video) => resolveSeedanceVideoUrl(video)));
     const audios = await Promise.all(audioReferences.map((audio) => resolveSeedanceAudioUrl(audio)));
     const payload: Record<string, unknown> = {
@@ -112,7 +121,9 @@ async function createSeedanceTask(config: AiConfig, model: string, prompt: strin
     }
     assertSeedanceVideoReferences(videoReferences);
     assertSeedanceAudioReferences(audioReferences);
-    const content = await buildSeedanceContent(config, prompt, references, videoReferences, audioReferences);
+    const optimizedCounter = { count: 0 };
+    const content = await buildSeedanceContent(config, prompt, references, videoReferences, audioReferences, optimizedCounter);
+    if (optimizedCounter.count) options?.onReferenceImagesOptimized?.(optimizedCounter.count);
     if (!content.length) throw new Error("请输入视频提示词，或连接参考图片/视频/音频");
     const payload = {
         model: modelOptionName(model),
@@ -174,12 +185,14 @@ function seedanceApiUrl(config: AiConfig, taskId?: string) {
     return buildApiUrl(config.baseUrl, `/contents/generations/tasks${taskId ? `/${encodeURIComponent(taskId)}` : ""}`);
 }
 
-async function buildSeedanceContent(config: AiConfig, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[]) {
+async function buildSeedanceContent(config: AiConfig, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], optimizedCounter?: { count: number }) {
     const content: Array<Record<string, unknown>> = [];
     const text = buildSeedancePromptText(prompt, references, videoReferences, audioReferences);
     if (text) content.push({ type: "text", text });
     for (const image of references.slice(0, SEEDANCE_REFERENCE_LIMITS.images)) {
-        content.push({ type: "image_url", image_url: { url: await resolveSeedanceImageUrl(config, image) }, role: "reference_image" });
+        const result = await resolveVideoReferenceImageUrl(image);
+        if (result.optimized && optimizedCounter) optimizedCounter.count += 1;
+        content.push({ type: "image_url", image_url: { url: result.url }, role: "reference_image" });
     }
     for (const video of videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos)) {
         content.push({ type: "video_url", video_url: { url: await resolveSeedanceVideoUrl(video) }, role: "reference_video" });
@@ -190,12 +203,13 @@ async function buildSeedanceContent(config: AiConfig, prompt: string, references
     return content;
 }
 
-async function resolveSeedanceImageUrl(config: AiConfig, image: ReferenceImage) {
+async function resolveVideoReferenceImageUrl(image: ReferenceImage) {
     const directUrl = image.url || image.dataUrl;
-    if (isPublicMediaUrl(directUrl) || directUrl.startsWith("asset://")) return directUrl;
+    if (isPublicMediaUrl(directUrl) || directUrl.startsWith("asset://")) return { url: directUrl, optimized: false };
     const dataUrl = await imageToDataUrl(image);
     if (!dataUrl) throw new Error("参考图读取失败，请换一张图片或重新上传");
-    return dataUrl;
+    const optimized = await optimizeVideoReferenceImageDataUrl(dataUrl);
+    return { url: optimized.dataUrl, optimized: optimized.optimized };
 }
 
 async function resolveSeedanceVideoUrl(video: ReferenceVideo) {
