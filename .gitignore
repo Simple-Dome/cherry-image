@@ -1,4 +1,5 @@
 .next/
+web/.next
 out/
 node_modules/
 .env*

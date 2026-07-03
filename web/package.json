@@ -4,7 +4,7 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "dev": "next dev --webpack -H 0.0.0.0 -p 3000",
+        "dev": "rm -rf .next && mkdir -p /tmp/gpt-image-playground-infinite-canvas-next && ln -sfn \"$PWD/node_modules\" /tmp/gpt-image-playground-infinite-canvas-next/node_modules && ln -sfn /tmp/gpt-image-playground-infinite-canvas-next .next && next dev -H 0.0.0.0 -p 3000",
         "build": "next build",
         "start": "next start",
         "format": "prettier --write .",
