@@ -103,6 +103,21 @@ const NODE_STATUS_IDLE = "idle" as const;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
+const MEDIA_URL_EXTENSIONS = {
+    image: /\.(png|jpe?g|webp|gif|bmp|avif|svg)$/i,
+    video: /\.(mp4|webm|mov|mkv|avi)$/i,
+    audio: /\.(mp3|wav|ogg|aac|flac|m4a)$/i,
+} as const;
+const IMAGE_URL_MIME_TYPES: Record<string, string> = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+    gif: "image/gif",
+    bmp: "image/bmp",
+    avif: "image/avif",
+    svg: "image/svg+xml",
+};
 const IMAGE_PROMPT_REVERSE_PRESET = `请根据参考图片反推一段适合用于 AI 生图的提示词。
 
 要求：
@@ -1336,22 +1351,50 @@ function InfiniteCanvasPage() {
         setMediaUrlModalOpen(true);
     }, []);
 
-    const handleMediaUrlConfirm = useCallback(() => {
+    const handleMediaUrlConfirm = useCallback(async () => {
         const url = mediaUrlInput.trim();
         if (!url) return;
 
-        const lower = url.toLowerCase().split("?")[0];
-        const isVideo = /\.(mp4|webm|mov|mkv|avi)$/.test(lower);
-        const isAudio = /\.(mp3|wav|ogg|aac|flac|m4a)$/.test(lower);
-        if (!isVideo && !isAudio) {
+        const mediaType = getMediaUrlType(url);
+        if (!mediaType) {
             return;
         }
 
-        const type = isVideo ? CanvasNodeType.Video : CanvasNodeType.Audio;
-        const spec = NODE_DEFAULT_SIZE[type];
         const center = getCanvasCenter();
-        const id = `${type}-url-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
         const title = url.split("/").pop()?.split("?")[0] || url;
+
+        try {
+            if (mediaType === "image") {
+                const meta = await readImageMeta(url);
+                const size = fitNodeSize(meta.width, meta.height);
+                const id = `image-url-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+                setNodes((prev) => [
+                    ...prev,
+                    {
+                        id,
+                        type: CanvasNodeType.Image,
+                        title,
+                        position: { x: center.x - size.width / 2, y: center.y - size.height / 2 },
+                        width: size.width,
+                        height: size.height,
+                        metadata: { content: url, status: "success" as const, naturalWidth: meta.width, naturalHeight: meta.height, mimeType: imageUrlMimeType(url) },
+                    },
+                ]);
+                setSelectedNodeIds(new Set([id]));
+                setSelectedConnectionId(null);
+                setDialogNodeId(id);
+                setMediaUrlModalOpen(false);
+                setMediaUrlInput("");
+                return;
+            }
+        } catch {
+            message.error("图片链接读取失败，请确认 URL 可直接访问");
+            return;
+        }
+
+        const type = mediaType === "video" ? CanvasNodeType.Video : CanvasNodeType.Audio;
+        const spec = NODE_DEFAULT_SIZE[type];
+        const id = `${type}-url-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
         setNodes((prev) => [
             ...prev,
@@ -1365,7 +1408,7 @@ function InfiniteCanvasPage() {
                 metadata: {
                     content: url,
                     status: "success" as const,
-                    mimeType: isVideo ? "video/mp4" : "audio/mpeg",
+                    mimeType: mediaType === "video" ? "video/mp4" : "audio/mpeg",
                 },
             },
         ]);
@@ -1373,7 +1416,7 @@ function InfiniteCanvasPage() {
         setSelectedConnectionId(null);
         setMediaUrlModalOpen(false);
         setMediaUrlInput("");
-    }, [mediaUrlInput, getCanvasCenter]);
+    }, [mediaUrlInput, getCanvasCenter, message]);
 
     const createTextNodeFromClipboard = useCallback(
         (text: string) => {
@@ -2848,23 +2891,24 @@ function InfiniteCanvasPage() {
                 </Modal>
 
                 <Modal
-                    title="粘贴媒体 URL"
+                    title="粘贴素材 URL"
                     open={mediaUrlModalOpen}
                     onOk={handleMediaUrlConfirm}
                     onCancel={() => { setMediaUrlModalOpen(false); setMediaUrlInput(""); }}
                     okText="添加到画布"
                     cancelText="取消"
-                    okButtonProps={{ disabled: !mediaUrlInput.trim() || (!/\.(mp4|webm|mov|mkv|avi)$/i.test(mediaUrlInput.split("?")[0]) && !/\.(mp3|wav|ogg|aac|flac|m4a)$/i.test(mediaUrlInput.split("?")[0])) }}
+                    okButtonProps={{ disabled: !mediaUrlInput.trim() || !getMediaUrlType(mediaUrlInput) }}
                 >
-                    <p className="mb-3 text-sm opacity-60">支持视频（mp4、webm、mov）和音频（mp3、wav、ogg）公网直链</p>
+                    <p className="mb-3 text-sm opacity-60">支持图片（png、jpg、webp、gif、svg）、视频（mp4、webm、mov）和音频（mp3、wav、ogg）公网直链</p>
+                    <p className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300">本地视频/音频生成时会上传为公网临时文件供模型读取，素材将在 30 天后自动删除，请勿上传敏感内容。</p>
                     <Input
-                        placeholder="https://example.com/video.mp4"
+                        placeholder="https://example.com/image.png"
                         value={mediaUrlInput}
                         onChange={(e) => setMediaUrlInput(e.target.value)}
                         onPressEnter={handleMediaUrlConfirm}
                         autoFocus
                     />
-                    {mediaUrlInput.trim() && !/\.(mp4|webm|mov|mkv|avi|mp3|wav|ogg|aac|flac|m4a)$/i.test(mediaUrlInput.split("?")[0]) && (
+                    {mediaUrlInput.trim() && !getMediaUrlType(mediaUrlInput) && (
                         <p className="mt-2 text-xs text-red-400">无法识别文件类型，请确认 URL 以支持的扩展名结尾</p>
                     )}
                 </Modal>
@@ -3091,6 +3135,19 @@ function Shortcut({ keys, value }: { keys: string[]; value: string }) {
             <span className="text-right text-sm opacity-55">{value}</span>
         </div>
     );
+}
+
+function getMediaUrlType(url: string): "image" | "video" | "audio" | null {
+    const path = url.trim().split("#", 1)[0].split("?", 1)[0];
+    if (MEDIA_URL_EXTENSIONS.image.test(path)) return "image";
+    if (MEDIA_URL_EXTENSIONS.video.test(path)) return "video";
+    if (MEDIA_URL_EXTENSIONS.audio.test(path)) return "audio";
+    return null;
+}
+
+function imageUrlMimeType(url: string) {
+    const ext = url.trim().split("#", 1)[0].split("?", 1)[0].split(".").pop()?.toLowerCase() || "png";
+    return IMAGE_URL_MIME_TYPES[ext] || "image/png";
 }
 
 function imageExtension(dataUrl: string) {

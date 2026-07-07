@@ -95,7 +95,7 @@ export function CanvasToolbar({
                 <ToolbarButton id="tool-upload" label="上传素材" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onUpload}>
                     <Upload className="size-4.5" />
                 </ToolbarButton>
-                <ToolbarButton id="tool-media-url" label="粘贴媒体 URL" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onAddMediaUrl}>
+                <ToolbarButton id="tool-media-url" label="粘贴素材 URL" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onAddMediaUrl}>
                     <Link2 className="size-4.5" />
                 </ToolbarButton>
                 <Divider theme={theme} />

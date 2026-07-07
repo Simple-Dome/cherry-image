@@ -337,9 +337,13 @@ function delay(ms: number, signal?: AbortSignal) {
 }
 
 async function uploadForPublicUrl(blob: Blob, hint: "video" | "audio"): Promise<string> {
-    if (!UPLOAD_BASE) throw new Error(`本地${hint === "video" ? "视频" : "音频"}无法上传：请配置 VITE_UPLOAD_BASE 环境变量并启动上传服务`);
     const ext = blob.type.split("/")[1]?.split(";")[0] || (hint === "video" ? "mp4" : "mp3");
     const name = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+    if (UPLOAD_BASE) return uploadToLocalServer(blob, name, hint);
+    return uploadToObjectStorage(blob, name, hint);
+}
+
+async function uploadToLocalServer(blob: Blob, name: string, hint: "video" | "audio") {
     const res = await fetch(`${UPLOAD_BASE}/upload?name=${encodeURIComponent(name)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/octet-stream" },
@@ -349,6 +353,20 @@ async function uploadForPublicUrl(blob: Blob, hint: "video" | "audio"): Promise<
     const json = (await res.json()) as { url?: string };
     if (!json.url) throw new Error("上传服务未返回 URL");
     return json.url;
+}
+
+async function uploadToObjectStorage(blob: Blob, name: string, hint: "video" | "audio") {
+    const signed = await fetch("/api/uploads/sign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, contentType: blob.type || (hint === "video" ? "video/mp4" : "audio/mpeg"), size: blob.size, kind: hint }),
+    });
+    const payload = (await signed.json().catch(() => ({}))) as { uploadUrl?: string; publicUrl?: string; headers?: Record<string, string>; error?: string };
+    if (!signed.ok) throw new Error(payload.error || `生成${hint === "video" ? "视频" : "音频"}上传地址失败（${signed.status}）`);
+    if (!payload.uploadUrl || !payload.publicUrl) throw new Error("上传接口未返回完整地址");
+    const uploaded = await fetch(payload.uploadUrl, { method: "PUT", headers: payload.headers || {}, body: blob });
+    if (!uploaded.ok) throw new Error(`上传${hint === "video" ? "视频" : "音频"}到对象存储失败（${uploaded.status}）`);
+    return payload.publicUrl;
 }
 
 function blobToDataUrl(blob: Blob) {
