@@ -1,5 +1,6 @@
 import axios from "axios";
 
+import { UPLOAD_BASE } from "@/constant/env";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
@@ -73,7 +74,7 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {
     let optimizedCount = 0;
     const images = await Promise.all(
-        references.slice(0, 7).map(async (image) => {
+        references.slice(0, SEEDANCE_REFERENCE_LIMITS.images).map(async (image) => {
             const result = await resolveVideoReferenceImageUrl(image);
             if (result.optimized) optimizedCount += 1;
             return result.url;
@@ -218,7 +219,7 @@ async function resolveSeedanceVideoUrl(video: ReferenceVideo) {
     if (video.storageKey) blob = await getMediaBlob(video.storageKey);
     if (!blob && video.url?.startsWith("blob:")) blob = await (await fetch(video.url)).blob();
     if (!blob) throw new Error("参考视频必须是公网 URL、素材 ID，或本地已保存的视频");
-    return blobToDataUrl(blob);
+    return uploadForPublicUrl(blob, "video");
 }
 
 async function resolveSeedanceAudioUrl(audio: ReferenceAudio) {
@@ -227,7 +228,7 @@ async function resolveSeedanceAudioUrl(audio: ReferenceAudio) {
     if (audio.storageKey) blob = await getMediaBlob(audio.storageKey);
     if (!blob && audio.url?.startsWith("blob:")) blob = await (await fetch(audio.url)).blob();
     if (!blob) throw new Error("参考音频必须是公网 URL、素材 ID，或本地已保存的音频");
-    return blobToDataUrl(blob);
+    return uploadForPublicUrl(blob, "audio");
 }
 
 async function videoResultFromUrl(url: string, options?: RequestOptions): Promise<VideoGenerationResult> {
@@ -333,6 +334,21 @@ function delay(ms: number, signal?: AbortSignal) {
             { once: true },
         );
     });
+}
+
+async function uploadForPublicUrl(blob: Blob, hint: "video" | "audio"): Promise<string> {
+    if (!UPLOAD_BASE) throw new Error(`本地${hint === "video" ? "视频" : "音频"}无法上传：请配置 VITE_UPLOAD_BASE 环境变量并启动上传服务`);
+    const ext = blob.type.split("/")[1]?.split(";")[0] || (hint === "video" ? "mp4" : "mp3");
+    const name = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+    const res = await fetch(`${UPLOAD_BASE}/upload?name=${encodeURIComponent(name)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: blob,
+    });
+    if (!res.ok) throw new Error(`上传${hint === "video" ? "视频" : "音频"}失败（${res.status}）`);
+    const json = (await res.json()) as { url?: string };
+    if (!json.url) throw new Error("上传服务未返回 URL");
+    return json.url;
 }
 
 function blobToDataUrl(blob: Blob) {

@@ -22,7 +22,7 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "../utils/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "../utils/canvas-node-size";
-import { App, Button, Dropdown, Modal } from "antd";
+import { App, Button, Dropdown, Input, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "../constants";
 import { ActiveConnectionPath, ConnectionPath } from "../components/canvas-connections";
 import { CanvasConfigComposer } from "../components/canvas-config-composer";
@@ -289,6 +289,8 @@ function InfiniteCanvasPage() {
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+    const [mediaUrlModalOpen, setMediaUrlModalOpen] = useState(false);
+    const [mediaUrlInput, setMediaUrlInput] = useState("");
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
@@ -1328,6 +1330,50 @@ function InfiniteCanvasPage() {
         setSelectedNodeIds(new Set([id]));
         setSelectedConnectionId(null);
     }, []);
+
+    const handleAddMediaUrl = useCallback(() => {
+        setMediaUrlInput("");
+        setMediaUrlModalOpen(true);
+    }, []);
+
+    const handleMediaUrlConfirm = useCallback(() => {
+        const url = mediaUrlInput.trim();
+        if (!url) return;
+
+        const lower = url.toLowerCase().split("?")[0];
+        const isVideo = /\.(mp4|webm|mov|mkv|avi)$/.test(lower);
+        const isAudio = /\.(mp3|wav|ogg|aac|flac|m4a)$/.test(lower);
+        if (!isVideo && !isAudio) {
+            return;
+        }
+
+        const type = isVideo ? CanvasNodeType.Video : CanvasNodeType.Audio;
+        const spec = NODE_DEFAULT_SIZE[type];
+        const center = getCanvasCenter();
+        const id = `${type}-url-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const title = url.split("/").pop()?.split("?")[0] || url;
+
+        setNodes((prev) => [
+            ...prev,
+            {
+                id,
+                type,
+                title,
+                position: { x: center.x - spec.width / 2, y: center.y - spec.height / 2 },
+                width: spec.width,
+                height: spec.height,
+                metadata: {
+                    content: url,
+                    status: "success" as const,
+                    mimeType: isVideo ? "video/mp4" : "audio/mpeg",
+                },
+            },
+        ]);
+        setSelectedNodeIds(new Set([id]));
+        setSelectedConnectionId(null);
+        setMediaUrlModalOpen(false);
+        setMediaUrlInput("");
+    }, [mediaUrlInput, getCanvasCenter]);
 
     const createTextNodeFromClipboard = useCallback(
         (text: string) => {
@@ -2710,6 +2756,7 @@ function InfiniteCanvasPage() {
                     onAddAudio={() => createNode(CanvasNodeType.Audio)}
                     onAddText={() => createNode(CanvasNodeType.Text)}
                     onAddConfig={() => createNode(CanvasNodeType.Config)}
+                    onAddMediaUrl={handleAddMediaUrl}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
                     onUpload={() => handleUploadRequest()}
@@ -2798,6 +2845,28 @@ function InfiniteCanvasPage() {
                     }
                 >
                     <p className="text-sm opacity-60">这会删除当前画布上的所有节点和连线。</p>
+                </Modal>
+
+                <Modal
+                    title="粘贴媒体 URL"
+                    open={mediaUrlModalOpen}
+                    onOk={handleMediaUrlConfirm}
+                    onCancel={() => { setMediaUrlModalOpen(false); setMediaUrlInput(""); }}
+                    okText="添加到画布"
+                    cancelText="取消"
+                    okButtonProps={{ disabled: !mediaUrlInput.trim() || (!/\.(mp4|webm|mov|mkv|avi)$/i.test(mediaUrlInput.split("?")[0]) && !/\.(mp3|wav|ogg|aac|flac|m4a)$/i.test(mediaUrlInput.split("?")[0])) }}
+                >
+                    <p className="mb-3 text-sm opacity-60">支持视频（mp4、webm、mov）和音频（mp3、wav、ogg）公网直链</p>
+                    <Input
+                        placeholder="https://example.com/video.mp4"
+                        value={mediaUrlInput}
+                        onChange={(e) => setMediaUrlInput(e.target.value)}
+                        onPressEnter={handleMediaUrlConfirm}
+                        autoFocus
+                    />
+                    {mediaUrlInput.trim() && !/\.(mp4|webm|mov|mkv|avi|mp3|wav|ogg|aac|flac|m4a)$/i.test(mediaUrlInput.split("?")[0]) && (
+                        <p className="mt-2 text-xs text-red-400">无法识别文件类型，请确认 URL 以支持的扩展名结尾</p>
+                    )}
                 </Modal>
 
                 <AssetPickerModal open={assetPickerOpen} onInsert={handleAssetInsert} onClose={() => setAssetPickerOpen(false)} />

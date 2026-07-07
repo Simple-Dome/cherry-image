@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowUp, LoaderCircle, Square } from "lucide-react";
-import { Button } from "antd";
+import { ArrowUp, LoaderCircle, Maximize2, Minimize2, Square } from "lucide-react";
+import { Button, Modal } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -40,6 +40,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const hasImageContent = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content);
     const isEditingExistingContent = hasTextContent || hasImageContent;
     const [prompt, setPrompt] = useState(isEditingExistingContent ? "" : node.metadata?.prompt || "");
+    const [expanded, setExpanded] = useState(false);
     const credits = requestCreditCost({ channelMode: config.channelMode, model: config.model, count: mode === "image" ? config.count : 1 });
 
     useEffect(() => {
@@ -58,82 +59,112 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         setPrompt("");
     };
 
-    return (
-        <div
-            data-canvas-no-zoom
-            className="rounded-2xl border p-3 shadow-2xl backdrop-blur"
-            style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
-            onMouseDown={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-            onWheel={(event) => event.stopPropagation()}
-        >
-            <CanvasResourceMentionTextarea
-                value={prompt}
-                references={mentionReferences}
-                onChange={updatePrompt}
-                onSubmit={submit}
-                className="thin-scrollbar h-24 w-full resize-none rounded-xl border px-3 py-2 text-sm leading-5 outline-none cursor-text"
-                style={{ background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text }}
-                placeholder={promptPlaceholder(mode, hasImageContent, hasTextContent)}
-            />
+    const editor = (large = false) => (
+        <CanvasResourceMentionTextarea
+            value={prompt}
+            references={mentionReferences}
+            onChange={updatePrompt}
+            onSubmit={submit}
+            className={`thin-scrollbar w-full resize-none rounded-xl border px-3 py-2 text-sm leading-5 outline-none cursor-text ${large ? "min-h-[420px] flex-1" : "h-24"}`}
+            style={{ background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text }}
+            placeholder={promptPlaceholder(mode, hasImageContent, hasTextContent)}
+        />
+    );
 
-            <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                    <CanvasPromptLibrary onSelect={updatePrompt} />
-                    {mode === "image" ? (
+    const controls = () => (
+        <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+                <CanvasPromptLibrary onSelect={updatePrompt} />
+                {mode === "image" ? (
+                    <>
+                        <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="image" onMissingConfig={() => openConfigDialog(true)} />
+                        <CanvasImageSettingsPopover
+                            config={config}
+                            placement="topLeft"
+                            buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3"
+                            onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
+                            onMissingConfig={() => openConfigDialog(true)}
+                            onOpenChange={onImageSettingsOpenChange}
+                        />
+                    </>
+                ) : mode === "video" ? (
+                    <>
+                        <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="video" onMissingConfig={() => openConfigDialog(true)} />
+                        <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                    </>
+                ) : mode === "audio" ? (
+                    <>
+                        <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="audio" onMissingConfig={() => openConfigDialog(true)} />
+                        <CanvasAudioSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
+                    </>
+                ) : (
+                    <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="text" onMissingConfig={() => openConfigDialog(true)} />
+                )}
+            </div>
+            <Button
+                type="primary"
+                className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3"
+                danger={isRunning}
+                disabled={!isRunning && !prompt.trim()}
+                onClick={() => (isRunning ? onStop(node.id) : submit())}
+                aria-label={isRunning ? "停止生成" : "生成"}
+            >
+                <span className="flex items-center gap-1.5">
+                    {isRunning ? (
                         <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="image" onMissingConfig={() => openConfigDialog(true)} />
-                            <CanvasImageSettingsPopover
-                                config={config}
-                                placement="topLeft"
-                                buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3"
-                                onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
-                                onMissingConfig={() => openConfigDialog(true)}
-                                onOpenChange={onImageSettingsOpenChange}
-                            />
-                        </>
-                    ) : mode === "video" ? (
-                        <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="video" onMissingConfig={() => openConfigDialog(true)} />
-                            <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
-                        </>
-                    ) : mode === "audio" ? (
-                        <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="audio" onMissingConfig={() => openConfigDialog(true)} />
-                            <CanvasAudioSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
+                            <LoaderCircle className="size-4 animate-spin" />
+                            <Square className="size-3.5 fill-current" />
+                            <span className="text-xs font-medium">停止</span>
                         </>
                     ) : (
-                        <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="text" onMissingConfig={() => openConfigDialog(true)} />
+                        <>
+                            <span className="inline-flex items-center gap-1 text-xs font-medium tabular-nums">
+                                <CreditSymbol />
+                                {credits.toLocaleString()}
+                            </span>
+                            <ArrowUp className="size-4" />
+                        </>
                     )}
-                </div>
-                <Button
-                    type="primary"
-                    className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3"
-                    danger={isRunning}
-                    disabled={!isRunning && !prompt.trim()}
-                    onClick={() => (isRunning ? onStop(node.id) : submit())}
-                    aria-label={isRunning ? "停止生成" : "生成"}
-                >
-                    <span className="flex items-center gap-1.5">
-                        {isRunning ? (
-                            <>
-                                <LoaderCircle className="size-4 animate-spin" />
-                                <Square className="size-3.5 fill-current" />
-                                <span className="text-xs font-medium">停止</span>
-                            </>
-                        ) : (
-                            <>
-                                <span className="inline-flex items-center gap-1 text-xs font-medium tabular-nums">
-                                    <CreditSymbol />
-                                    {credits.toLocaleString()}
-                                </span>
-                                <ArrowUp className="size-4" />
-                            </>
-                        )}
-                    </span>
-                </Button>
-            </div>
+                </span>
+            </Button>
         </div>
+    );
+
+    return (
+        <>
+            {!expanded ? (
+                <div
+                    data-canvas-no-zoom
+                    className="relative rounded-2xl border p-3 shadow-2xl backdrop-blur"
+                    style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onWheel={(event) => event.stopPropagation()}
+                >
+                    <Button size="small" type="text" className="!absolute !right-4 !top-4 !z-10 !h-7 !w-7 !min-w-7 !p-0" icon={<Maximize2 className="size-3.5" />} onClick={() => setExpanded(true)} aria-label="放大输入框" />
+                    <div className="pr-9">{editor()}</div>
+                    {controls()}
+                </div>
+            ) : null}
+            <Modal title={null} open={expanded} centered footer={null} width={900} onCancel={() => setExpanded(false)} destroyOnHidden styles={{ body: { padding: 0 } }}>
+                {expanded ? (
+                    <div
+                        data-canvas-no-zoom
+                        className="flex max-h-[78vh] min-h-[540px] flex-col rounded-2xl border p-3 shadow-2xl backdrop-blur"
+                        style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onWheel={(event) => event.stopPropagation()}
+                    >
+                        <div className="mb-2 flex items-center justify-end">
+                            <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<Minimize2 className="size-3.5" />} onClick={() => setExpanded(false)} aria-label="收起输入框" />
+                        </div>
+                        <div className="flex min-h-0 flex-1">{editor(true)}</div>
+                        {controls()}
+                    </div>
+                ) : null}
+            </Modal>
+        </>
     );
 }
 
