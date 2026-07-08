@@ -8,7 +8,7 @@ type SignUploadRequest = {
     name?: string;
     contentType?: string;
     size?: number;
-    kind?: "video" | "audio";
+    kind?: "image" | "video" | "audio";
 };
 
 const maxBytes = Number(process.env.UPLOAD_MAX_BYTES || 500 * 1024 * 1024);
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
         assertStorageConfig();
         const body = (await request.json()) as SignUploadRequest;
         const contentType = normalizeContentType(body.contentType, body.kind);
-        const kind = body.kind || (contentType.startsWith("audio/") ? "audio" : "video");
+        const kind = body.kind || (contentType.startsWith("image/") ? "image" : contentType.startsWith("audio/") ? "audio" : "video");
         const size = Number(body.size || 0);
         if (!Number.isFinite(size) || size <= 0) return Response.json({ error: "文件大小无效" }, { status: 400 });
         if (size > maxBytes) return Response.json({ error: `文件不能超过 ${Math.floor(maxBytes / 1024 / 1024)}MB` }, { status: 400 });
@@ -52,13 +52,13 @@ function assertStorageConfig() {
     }
 }
 
-function normalizeContentType(value?: string, kind?: "video" | "audio") {
+function normalizeContentType(value?: string, kind?: "image" | "video" | "audio") {
     const contentType = (value || "").split(";")[0].trim().toLowerCase();
-    if (contentType.startsWith("video/") || contentType.startsWith("audio/")) return contentType;
-    return kind === "audio" ? "audio/mpeg" : "video/mp4";
+    if (contentType.startsWith("image/") || contentType.startsWith("video/") || contentType.startsWith("audio/")) return contentType;
+    return kind === "image" ? "image/png" : kind === "audio" ? "audio/mpeg" : "video/mp4";
 }
 
 function safeName(name: string | undefined, contentType: string) {
-    const fallback = contentType.startsWith("audio/") ? "audio.mp3" : "video.mp4";
+    const fallback = contentType.startsWith("image/") ? "image.png" : contentType.startsWith("audio/") ? "audio.mp3" : "video.mp4";
     return (name || fallback).split("/").pop()?.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || fallback;
 }

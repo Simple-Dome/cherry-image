@@ -2,8 +2,8 @@ import axios from "axios";
 
 import { UPLOAD_BASE } from "@/constant/env";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
-import { imageToDataUrl } from "@/services/image-storage";
-import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
+import { getImageBlob, imageToDataUrl } from "@/services/image-storage";
+import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError } from "@/lib/seedance-video";
 import { optimizeVideoReferenceImageDataUrl } from "@/lib/video-reference-preprocess";
 import { buildApiUrl, modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
@@ -19,6 +19,14 @@ type SeedanceTask = {
 };
 type ApiEnvelope<T> = T | { code?: number; data?: T | null; msg?: string };
 type RequestOptions = { signal?: AbortSignal; onReferenceImagesOptimized?: (count: number) => void };
+type VideoReferencePolicy = "imageBase64Only" | "allUrlMultimodal";
+
+const BASE64_IMAGE_ONLY_VIDEO_MODELS = new Set(["video-v1-10s", "video-v1-5s", "video-v1-15s"]);
+const ALL_URL_MULTIMODAL_VIDEO_MODELS = new Set(["as-sd2.0-fast", "video-ds-2.0-fast", "video-ds-2.0"]);
+const VIDEO_REFERENCE_POLICY_LIMITS = {
+    imageBase64Only: { images: 9, videos: 0, audios: 0, code: "900" },
+    allUrlMultimodal: { images: 4, videos: 3, audios: 1, code: "431" },
+} as const;
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
 export type VideoGenerationTask = { id: string; provider: "openai" | "seedance"; model: string };
@@ -72,17 +80,20 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {
+    const policy = getVideoReferencePolicy(model);
+    const limits = VIDEO_REFERENCE_POLICY_LIMITS[policy];
+    assertVideoReferencePolicy(policy, references, videoReferences, audioReferences);
     let optimizedCount = 0;
     const images = await Promise.all(
-        references.slice(0, SEEDANCE_REFERENCE_LIMITS.images).map(async (image) => {
-            const result = await resolveVideoReferenceImageUrl(image);
+        references.slice(0, limits.images).map(async (image) => {
+            const result = policy === "allUrlMultimodal" ? await resolvePublicVideoReferenceImageUrl(image) : await resolveVideoReferenceImageBase64(image);
             if (result.optimized) optimizedCount += 1;
             return result.url;
         }),
     );
     if (optimizedCount) options?.onReferenceImagesOptimized?.(optimizedCount);
-    const videos = await Promise.all(videoReferences.map((video) => resolveSeedanceVideoUrl(video)));
-    const audios = await Promise.all(audioReferences.map((audio) => resolveSeedanceAudioUrl(audio)));
+    const videos = policy === "allUrlMultimodal" ? await Promise.all(videoReferences.slice(0, limits.videos).map((video) => resolvePublicReferenceVideoUrl(video))) : [];
+    const audios = policy === "allUrlMultimodal" ? await Promise.all(audioReferences.slice(0, limits.audios).map((audio) => resolvePublicReferenceAudioUrl(audio))) : [];
     const payload: Record<string, unknown> = {
         model: modelOptionName(model),
         prompt,
@@ -117,13 +128,15 @@ async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, 
 }
 
 async function createSeedanceTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
+    const policy = getVideoReferencePolicy(model);
+    assertVideoReferencePolicy(policy, references, videoReferences, audioReferences);
     if (audioReferences.length && !references.length && !videoReferences.length) {
         throw new Error("Seedance 参考音频不能单独使用，请同时添加参考图或参考视频");
     }
     assertSeedanceVideoReferences(videoReferences);
     assertSeedanceAudioReferences(audioReferences);
     const optimizedCounter = { count: 0 };
-    const content = await buildSeedanceContent(config, prompt, references, videoReferences, audioReferences, optimizedCounter);
+    const content = await buildSeedanceContent(policy, prompt, references, videoReferences, audioReferences, optimizedCounter);
     if (optimizedCounter.count) options?.onReferenceImagesOptimized?.(optimizedCounter.count);
     if (!content.length) throw new Error("请输入视频提示词，或连接参考图片/视频/音频");
     const payload = {
@@ -186,48 +199,58 @@ function seedanceApiUrl(config: AiConfig, taskId?: string) {
     return buildApiUrl(config.baseUrl, `/contents/generations/tasks${taskId ? `/${encodeURIComponent(taskId)}` : ""}`);
 }
 
-async function buildSeedanceContent(config: AiConfig, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], optimizedCounter?: { count: number }) {
+async function buildSeedanceContent(policy: VideoReferencePolicy, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], optimizedCounter?: { count: number }) {
+    const limits = VIDEO_REFERENCE_POLICY_LIMITS[policy];
     const content: Array<Record<string, unknown>> = [];
     const text = buildSeedancePromptText(prompt, references, videoReferences, audioReferences);
     if (text) content.push({ type: "text", text });
-    for (const image of references.slice(0, SEEDANCE_REFERENCE_LIMITS.images)) {
-        const result = await resolveVideoReferenceImageUrl(image);
+    for (const image of references.slice(0, limits.images)) {
+        const result = policy === "allUrlMultimodal" ? await resolvePublicVideoReferenceImageUrl(image) : await resolveVideoReferenceImageBase64(image);
         if (result.optimized && optimizedCounter) optimizedCounter.count += 1;
         content.push({ type: "image_url", image_url: { url: result.url }, role: "reference_image" });
     }
-    for (const video of videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos)) {
-        content.push({ type: "video_url", video_url: { url: await resolveSeedanceVideoUrl(video) }, role: "reference_video" });
+    for (const video of videoReferences.slice(0, limits.videos)) {
+        content.push({ type: "video_url", video_url: { url: await resolvePublicReferenceVideoUrl(video) }, role: "reference_video" });
     }
-    for (const audio of audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios)) {
-        content.push({ type: "audio_url", audio_url: { url: await resolveSeedanceAudioUrl(audio) }, role: "reference_audio" });
+    for (const audio of audioReferences.slice(0, limits.audios)) {
+        content.push({ type: "audio_url", audio_url: { url: await resolvePublicReferenceAudioUrl(audio) }, role: "reference_audio" });
     }
     return content;
 }
 
-async function resolveVideoReferenceImageUrl(image: ReferenceImage) {
-    const directUrl = image.url || image.dataUrl;
-    if (isPublicMediaUrl(directUrl) || directUrl.startsWith("asset://")) return { url: directUrl, optimized: false };
+async function resolveVideoReferenceImageBase64(image: ReferenceImage) {
     const dataUrl = await imageToDataUrl(image);
-    if (!dataUrl) throw new Error("参考图读取失败，请换一张图片或重新上传");
+    if (!dataUrl?.startsWith("data:image/")) throw new Error("参考图需要能读取为 Base64，请换一张图片或重新上传");
     const optimized = await optimizeVideoReferenceImageDataUrl(dataUrl);
     return { url: optimized.dataUrl, optimized: optimized.optimized };
 }
 
-async function resolveSeedanceVideoUrl(video: ReferenceVideo) {
-    if (isPublicMediaUrl(video.url) || video.url.startsWith("asset://")) return video.url;
+async function resolvePublicVideoReferenceImageUrl(image: ReferenceImage) {
+    const directUrl = image.url || (!image.dataUrl?.startsWith("data:") && !image.dataUrl?.startsWith("blob:") ? image.dataUrl : "");
+    if (isPublicMediaUrl(directUrl)) return { url: directUrl, optimized: false };
+    let blob: Blob | null = null;
+    if (image.storageKey) blob = await getImageBlob(image.storageKey);
+    if (!blob && image.dataUrl) blob = await (await fetch(image.dataUrl)).blob();
+    if (!blob && image.url?.startsWith("blob:")) blob = await (await fetch(image.url)).blob();
+    if (!blob) throw new Error("参考图片必须是公网 URL，或本地已保存的图片");
+    return { url: await uploadForPublicUrl(blob, "image"), optimized: false };
+}
+
+async function resolvePublicReferenceVideoUrl(video: ReferenceVideo) {
+    if (isPublicMediaUrl(video.url)) return video.url;
     let blob: Blob | null = null;
     if (video.storageKey) blob = await getMediaBlob(video.storageKey);
     if (!blob && video.url?.startsWith("blob:")) blob = await (await fetch(video.url)).blob();
-    if (!blob) throw new Error("参考视频必须是公网 URL、素材 ID，或本地已保存的视频");
+    if (!blob) throw new Error("参考视频必须是公网 URL，或本地已保存的视频");
     return uploadForPublicUrl(blob, "video");
 }
 
-async function resolveSeedanceAudioUrl(audio: ReferenceAudio) {
-    if (isPublicMediaUrl(audio.url) || audio.url.startsWith("asset://")) return audio.url;
+async function resolvePublicReferenceAudioUrl(audio: ReferenceAudio) {
+    if (isPublicMediaUrl(audio.url)) return audio.url;
     let blob: Blob | null = null;
     if (audio.storageKey) blob = await getMediaBlob(audio.storageKey);
     if (!blob && audio.url?.startsWith("blob:")) blob = await (await fetch(audio.url)).blob();
-    if (!blob) throw new Error("参考音频必须是公网 URL、素材 ID，或本地已保存的音频");
+    if (!blob) throw new Error("参考音频必须是公网 URL，或本地已保存的音频");
     return uploadForPublicUrl(blob, "audio");
 }
 
@@ -247,6 +270,25 @@ function assertVideoConfig(config: AiConfig, model: string) {
     if (!config.baseUrl.trim()) throw new Error("请先配置 Base URL");
     if (!config.apiKey.trim()) throw new Error("请先配置 API Key");
     if (config.apiFormat === "gemini") throw new Error("Gemini 调用格式暂不支持视频生成，请使用 OpenAI 格式渠道");
+}
+
+function getVideoReferencePolicy(model: string): VideoReferencePolicy {
+    const name = modelOptionName(model).trim().toLowerCase();
+    if (ALL_URL_MULTIMODAL_VIDEO_MODELS.has(name)) return "allUrlMultimodal";
+    if (BASE64_IMAGE_ONLY_VIDEO_MODELS.has(name)) return "imageBase64Only";
+    return "imageBase64Only";
+}
+
+function assertVideoReferencePolicy(policy: VideoReferencePolicy, images: ReferenceImage[], videos: ReferenceVideo[], audios: ReferenceAudio[]) {
+    const limits = VIDEO_REFERENCE_POLICY_LIMITS[policy];
+    if (policy === "imageBase64Only") {
+        if (videos.length || audios.length) throw new Error(`当前视频模型参数 ${limits.code}：最多支持 9 张图片，图片以 Base64 发送，不支持视频或音频参考`);
+        if (images.length > limits.images) throw new Error(`当前视频模型参数 ${limits.code}：最多支持 9 张图片`);
+        return;
+    }
+    if (images.length > limits.images || videos.length > limits.videos || audios.length > limits.audios) {
+        throw new Error(`当前视频模型参数 ${limits.code}：最多支持 ${limits.images} 张图片、${limits.videos} 个视频、${limits.audios} 个音频，且素材会以公网 URL 发送`);
+    }
 }
 
 function normalizeVideoSeconds(value: string) {
@@ -336,44 +378,45 @@ function delay(ms: number, signal?: AbortSignal) {
     });
 }
 
-async function uploadForPublicUrl(blob: Blob, hint: "video" | "audio"): Promise<string> {
-    const ext = blob.type.split("/")[1]?.split(";")[0] || (hint === "video" ? "mp4" : "mp3");
+type PublicUploadKind = "image" | "video" | "audio";
+
+async function uploadForPublicUrl(blob: Blob, hint: PublicUploadKind): Promise<string> {
+    const ext = blob.type.split("/")[1]?.split(";")[0] || (hint === "image" ? "png" : hint === "video" ? "mp4" : "mp3");
     const name = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
     if (UPLOAD_BASE) return uploadToLocalServer(blob, name, hint);
     return uploadToObjectStorage(blob, name, hint);
 }
 
-async function uploadToLocalServer(blob: Blob, name: string, hint: "video" | "audio") {
+async function uploadToLocalServer(blob: Blob, name: string, hint: PublicUploadKind) {
     const res = await fetch(`${UPLOAD_BASE}/upload?name=${encodeURIComponent(name)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/octet-stream" },
         body: blob,
     });
-    if (!res.ok) throw new Error(`上传${hint === "video" ? "视频" : "音频"}失败（${res.status}）`);
+    if (!res.ok) throw new Error(`上传${uploadKindLabel(hint)}失败（${res.status}）`);
     const json = (await res.json()) as { url?: string };
     if (!json.url) throw new Error("上传服务未返回 URL");
     return json.url;
 }
 
-async function uploadToObjectStorage(blob: Blob, name: string, hint: "video" | "audio") {
+async function uploadToObjectStorage(blob: Blob, name: string, hint: PublicUploadKind) {
     const signed = await fetch("/api/uploads/sign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, contentType: blob.type || (hint === "video" ? "video/mp4" : "audio/mpeg"), size: blob.size, kind: hint }),
+        body: JSON.stringify({ name, contentType: blob.type || defaultUploadContentType(hint), size: blob.size, kind: hint }),
     });
     const payload = (await signed.json().catch(() => ({}))) as { uploadUrl?: string; publicUrl?: string; headers?: Record<string, string>; error?: string };
-    if (!signed.ok) throw new Error(payload.error || `生成${hint === "video" ? "视频" : "音频"}上传地址失败（${signed.status}）`);
+    if (!signed.ok) throw new Error(payload.error || `生成${uploadKindLabel(hint)}上传地址失败（${signed.status}）`);
     if (!payload.uploadUrl || !payload.publicUrl) throw new Error("上传接口未返回完整地址");
     const uploaded = await fetch(payload.uploadUrl, { method: "PUT", headers: payload.headers || {}, body: blob });
-    if (!uploaded.ok) throw new Error(`上传${hint === "video" ? "视频" : "音频"}到对象存储失败（${uploaded.status}）`);
+    if (!uploaded.ok) throw new Error(`上传${uploadKindLabel(hint)}到对象存储失败（${uploaded.status}）`);
     return payload.publicUrl;
 }
 
-function blobToDataUrl(blob: Blob) {
-    return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error("读取本地素材失败"));
-        reader.readAsDataURL(blob);
-    });
+function uploadKindLabel(kind: PublicUploadKind) {
+    return kind === "image" ? "图片" : kind === "video" ? "视频" : "音频";
+}
+
+function defaultUploadContentType(kind: PublicUploadKind) {
+    return kind === "image" ? "image/png" : kind === "video" ? "video/mp4" : "audio/mpeg";
 }

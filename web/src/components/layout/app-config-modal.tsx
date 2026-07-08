@@ -304,6 +304,11 @@ export function AppConfigModal() {
                                     <div className="text-sm font-semibold">默认模型和可选项</div>
                                     <div className="mt-1 text-xs leading-5 text-stone-500">可选项决定各处下拉框展示哪些模型；同名模型会以括号里的渠道名区分。</div>
                                 </div>
+                                <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-100">
+                                    <div className="font-semibold">视频模型参数说明</div>
+                                    <div>video-v1-10s、video-v1-5s、video-v1-15s：参数 900，只支持图片参考，最多 9 张，图片以 Base64 发送。</div>
+                                    <div>as-sd2.0-fast、video-ds-2.0-fast、video-ds-2.0：参数 431，支持最多 4 张图片、3 个视频、1 个音频，全部素材以公网 URL 发送。</div>
+                                </div>
                                 <div className="grid gap-4 md:grid-cols-2">
                                     {modelGroups.map((group) => (
                                         <Form.Item key={group.modelsKey} label={group.optionsLabel} className="mb-0">
