@@ -1,6 +1,9 @@
 # 构建 Next.js 前端产物。
 FROM oven/bun:1.3.13 AS web-build
 
+ARG NEXT_BASE_PATH=
+ENV NEXT_BASE_PATH=$NEXT_BASE_PATH
+
 WORKDIR /app/web
 COPY web/package.json web/bun.lock ./
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile --cache-dir=/root/.bun/install/cache
@@ -21,7 +24,8 @@ COPY --from=web-build /app/web/.next/static /app/web/.next/static
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+ENV NEXT_BASE_PATH=
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 3000
 CMD ["sh", "-c", "cd /app/web && PORT=3000 node server.js"]

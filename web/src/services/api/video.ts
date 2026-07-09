@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import { UPLOAD_BASE } from "@/constant/env";
+import { withBasePath } from "@/lib/base-path";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { getImageBlob, imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError } from "@/lib/seedance-video";
@@ -31,6 +32,11 @@ const VIDEO_REFERENCE_POLICY_LIMITS = {
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
 export type VideoGenerationTask = { id: string; provider: "openai" | "seedance"; model: string };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
+export type VideoPollingPolicy = { delayMs: number; maxAttempts: number; timeoutMessage: string };
+
+const VIDEO_POLLING_DELAY_MS = 5000;
+const OPENAI_VIDEO_MAX_POLLING_MS = 20 * 60 * 1000;
+const SEEDANCE_VIDEO_MAX_POLLING_MS = 10 * 60 * 1000;
 
 function aiApiUrl(config: AiConfig, path: string) {
     return buildApiUrl(config.baseUrl, path);
@@ -45,16 +51,25 @@ function aiHeaders(config: AiConfig, contentType?: string) {
 
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationResult> {
     const task = await createVideoGenerationTask(config, prompt, references, videoReferences, audioReferences, options);
-    const delayMs = task.provider === "seedance" ? 5000 : 2500;
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    const pollingPolicy = getVideoPollingPolicy(task);
+    for (let attempt = 0; attempt < pollingPolicy.maxAttempts; attempt += 1) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const state = await pollVideoGenerationTask(config, task, options);
         if (state.status === "completed") return state.result;
         if (state.status === "failed") throw new Error(state.error);
-        if (attempt === 119) throw new Error(`${task.provider === "seedance" ? "Seedance " : ""}视频生成超时，请稍后重试`);
-        await delay(delayMs, options?.signal);
+        if (attempt === pollingPolicy.maxAttempts - 1) throw new Error(pollingPolicy.timeoutMessage);
+        await delay(pollingPolicy.delayMs, options?.signal);
     }
     throw new Error("视频生成超时，请稍后重试");
+}
+
+export function getVideoPollingPolicy(task: Pick<VideoGenerationTask, "provider">): VideoPollingPolicy {
+    const maxDurationMs = task.provider === "seedance" ? SEEDANCE_VIDEO_MAX_POLLING_MS : OPENAI_VIDEO_MAX_POLLING_MS;
+    return {
+        delayMs: VIDEO_POLLING_DELAY_MS,
+        maxAttempts: Math.ceil(maxDurationMs / VIDEO_POLLING_DELAY_MS),
+        timeoutMessage: `${task.provider === "seedance" ? "Seedance " : ""}视频生成超时，请稍后重试`,
+    };
 }
 
 export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {
@@ -400,7 +415,7 @@ async function uploadToLocalServer(blob: Blob, name: string, hint: PublicUploadK
 }
 
 async function uploadToObjectStorage(blob: Blob, name: string, hint: PublicUploadKind) {
-    const signed = await fetch("/api/uploads/sign", {
+    const signed = await fetch(withBasePath("/api/uploads/sign"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, contentType: blob.type || defaultUploadContentType(hint), size: blob.size, kind: hint }),

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Tooltip } from "antd";
 import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound, Wrench, X, XCircle } from "lucide-react";
 
+import { withBasePath } from "@/lib/base-path";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { LocalUser } from "@/stores/use-user-store";
 
@@ -271,7 +272,7 @@ function AgentDetailBlock({ detail, theme }: { detail: unknown; theme: (typeof c
 function AgentAvatar({ theme }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
     return (
         <span className="grid size-8 shrink-0 place-items-center" role="img" aria-label="OpenAI">
-            <span className="size-5 opacity-80" style={{ background: theme.node.text, WebkitMask: "url(/icons/openai.svg) center / contain no-repeat", mask: "url(/icons/openai.svg) center / contain no-repeat" }} />
+            <span className="size-5 opacity-80" style={{ background: theme.node.text, WebkitMask: `url(${withBasePath("/icons/openai.svg")}) center / contain no-repeat`, mask: `url(${withBasePath("/icons/openai.svg")}) center / contain no-repeat` }} />
         </span>
     );
 }

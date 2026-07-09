@@ -8,6 +8,24 @@ import { parseChangelog } from "@/lib/release";
 const webDir = dirname(fileURLToPath(import.meta.url));
 const localVersion = readFileSync(resolve(webDir, "../VERSION"), "utf8").trim() || "dev";
 const localChangelog = readFileSync(resolve(webDir, "../CHANGELOG.md"), "utf8");
+const basePath = normalizeBasePath(process.env.NEXT_BASE_PATH);
+
+export const appHtmlNoStoreHeaders = [
+    {
+        source: "/:path((?!_next/static|_next/image|favicon.ico|.*\\..*).*)",
+        headers: [
+            { key: "Cache-Control", value: "no-store, no-cache, must-revalidate, proxy-revalidate" },
+            { key: "Pragma", value: "no-cache" },
+            { key: "Expires", value: "0" },
+        ],
+    },
+];
+
+function normalizeBasePath(value: string | undefined) {
+    const trimmed = (value || "").trim();
+    if (!trimmed || trimmed === "/") return "";
+    return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
+}
 
 export default function nextConfig(phase: string): NextConfig {
     const isDev = phase === PHASE_DEVELOPMENT_SERVER;
@@ -16,6 +34,7 @@ export default function nextConfig(phase: string): NextConfig {
     return {
         output: "standalone",
         outputFileTracingRoot: webDir,
+        ...(basePath ? { basePath } : {}),
         allowedDevOrigins: isDev ? ["*.*.*.*"] : [],
         typescript: {
             ignoreBuildErrors: true,
@@ -23,6 +42,10 @@ export default function nextConfig(phase: string): NextConfig {
         env: {
             NEXT_PUBLIC_APP_VERSION: localVersion,
             NEXT_PUBLIC_APP_RELEASES: JSON.stringify(releases),
+            NEXT_PUBLIC_BASE_PATH: basePath,
+        },
+        async headers() {
+            return appHtmlNoStoreHeaders;
         },
     };
 }
