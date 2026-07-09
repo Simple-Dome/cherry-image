@@ -15,6 +15,7 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
+import { withBasePath } from "@/lib/base-path";
 import { DiaTextReveal } from "@/components/ui/dia-text-reveal";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
@@ -715,12 +716,12 @@ function AgentModelIcon({ model }: { model: string }) {
 
 function resolveModelIcon(model: string) {
     const name = model.toLowerCase();
-    if (name.includes("claude") || name.includes("anthropic")) return "/icons/claude.svg";
-    if (name.includes("gemini") || name.includes("google")) return "/icons/gemini.svg";
-    if (name.includes("gpt") || name.includes("openai")) return "/icons/openai.svg";
-    if (name.includes("grok")) return "/icons/grok.svg";
-    if (name.includes("deepseek")) return "/icons/deepseek.svg";
-    if (name.includes("glm")) return "/icons/glm.svg";
+    if (name.includes("claude") || name.includes("anthropic")) return withBasePath("/icons/claude.svg");
+    if (name.includes("gemini") || name.includes("google")) return withBasePath("/icons/gemini.svg");
+    if (name.includes("gpt") || name.includes("openai")) return withBasePath("/icons/openai.svg");
+    if (name.includes("grok")) return withBasePath("/icons/grok.svg");
+    if (name.includes("deepseek")) return withBasePath("/icons/deepseek.svg");
+    if (name.includes("glm")) return withBasePath("/icons/glm.svg");
     return "";
 }
 
