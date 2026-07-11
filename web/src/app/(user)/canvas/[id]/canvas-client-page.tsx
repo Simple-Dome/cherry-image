@@ -8,7 +8,7 @@ import { saveAs } from "file-saver";
 
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
-import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
+import { downloadVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, storeGeneratedVideo, VideoTaskPausedError, type VideoGenerationResult, type VideoGenerationTask, type VideoGenerationTaskState } from "@/services/api/video";
 import { DOCS_URL } from "@/constant/env";
 import { defaultConfig, type AiConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
@@ -45,7 +45,7 @@ import { AssetPickerModal, type InsertAssetPayload } from "../components/asset-p
 import { CanvasZoomControls } from "../components/canvas-zoom-controls";
 import { CanvasLocalAgentPanel } from "../components/canvas-local-agent-panel";
 import { useCanvasAgentStore } from "../stores/use-canvas-agent-store";
-import { useCanvasStore } from "../stores/use-canvas-store";
+import { flushCanvasStorePersistence, useCanvasStore } from "../stores/use-canvas-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
 import { buildCanvasResourceReferences, buildNodeMentionReferences } from "../utils/canvas-resource-references";
 import type { CanvasAgentMode } from "../components/canvas-agent-chat-ui";
@@ -57,6 +57,7 @@ import {
     type CanvasImageGenerationType,
     type CanvasNodeData,
     type CanvasNodeMetadata,
+    type CanvasRemoteVideoTask,
     type ConnectionHandle,
     type ContextMenuState,
     type Position,
@@ -102,6 +103,7 @@ const CONNECTION_NODE_HIT_PADDING = 32;
 const NODE_STATUS_IDLE = "idle" as const;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
+const NODE_STATUS_RECOVERABLE = "recoverable" as const;
 const NODE_STATUS_ERROR = "error" as const;
 const MEDIA_URL_EXTENSIONS = {
     image: /\.(png|jpe?g|webp|gif|bmp|avif|svg)$/i,
@@ -300,6 +302,7 @@ function InfiniteCanvasPage() {
     const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [runningNodeId, setRunningNodeId] = useState<string | null>(null);
+    const [remoteVideoActionNodeIds, setRemoteVideoActionNodeIds] = useState<Set<string>>(new Set());
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
     const [showImageInfo, setShowImageInfo] = useState(false);
@@ -346,6 +349,7 @@ function InfiniteCanvasPage() {
     const agentCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
+    const remoteVideoActionNodeIdsRef = useRef(new Set<string>());
 
     const createHistoryEntry = useCallback(
         (): CanvasHistoryEntry => ({
@@ -378,6 +382,17 @@ function InfiniteCanvasPage() {
         if (request?.controller === controller) generationRequestsRef.current.delete(targetNodeId);
     }, []);
 
+    const persistRemoteVideoTask = useCallback(
+        (nodeId: string, task: VideoGenerationTask) => {
+            const nextNodes = nodesRef.current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, remoteVideoTask: createCanvasRemoteVideoTask(task) } } : node));
+            nodesRef.current = nextNodes;
+            setNodes(nextNodes);
+            updateProject(projectId, { nodes: nextNodes });
+            void flushCanvasStorePersistence();
+        },
+        [projectId, updateProject],
+    );
+
     const stopGenerationByRunningId = useCallback((runningId: string) => {
         const affectedNodeIds = new Set<string>();
         generationRequestsRef.current.forEach((request) => {
@@ -392,7 +407,9 @@ function InfiniteCanvasPage() {
         setNodes((prev) =>
             prev.map((node) =>
                 affectedNodeIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING
-                    ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } }
+                    ? node.type === CanvasNodeType.Video && node.metadata.remoteVideoTask
+                        ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails: "已停止自动查询，可继续查询原视频任务。" } }
+                        : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } }
                     : node,
             ),
         );
@@ -1636,6 +1653,89 @@ function InfiniteCanvasPage() {
         saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
     }, []);
 
+    const runRemoteVideoAction = useCallback(async (nodeId: string, action: () => Promise<void>) => {
+        if (remoteVideoActionNodeIdsRef.current.has(nodeId)) return;
+        remoteVideoActionNodeIdsRef.current.add(nodeId);
+        setRemoteVideoActionNodeIds(new Set(remoteVideoActionNodeIdsRef.current));
+        try {
+            await action();
+        } finally {
+            remoteVideoActionNodeIdsRef.current.delete(nodeId);
+            setRemoteVideoActionNodeIds(new Set(remoteVideoActionNodeIdsRef.current));
+        }
+    }, []);
+
+    const queryRemoteVideoTask = useCallback(
+        async (node: CanvasNodeData) => {
+            const remoteTask = node.metadata?.remoteVideoTask;
+            if (!remoteTask) return message.error("当前视频节点没有可查询的任务 ID");
+            if (!isAiConfigReady(effectiveConfig, remoteTask.model)) {
+                openConfigDialog(true);
+                return;
+            }
+            await runRemoteVideoAction(node.id, async () => {
+                try {
+                    const state = await pollVideoGenerationTask(effectiveConfig, toVideoGenerationTask(remoteTask));
+                    setNodes((prev) => prev.map((item) => (item.id === node.id ? applyRemoteVideoTaskState(item, state) : item)));
+                    if (state.status === "completed") message.success("视频已完成，可以下载");
+                    else if (state.status === "failed") message.error(state.error);
+                    else message.info(typeof state.progress === "number" ? `视频生成进度 ${Math.round(state.progress)}%` : `远端状态：${state.remoteStatus}`);
+                } catch (error) {
+                    const errorDetails = error instanceof Error ? error.message : "视频任务查询失败";
+                    setNodes((prev) => prev.map((item) => (item.id === node.id && !item.metadata?.content && !generationRequestsRef.current.has(node.id) ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails } } : item)));
+                    message.error(errorDetails);
+                }
+            });
+        },
+        [effectiveConfig, isAiConfigReady, message, openConfigDialog, runRemoteVideoAction],
+    );
+
+    const downloadRemoteVideo = useCallback(
+        async (node: CanvasNodeData) => {
+            const remoteTask = node.metadata?.remoteVideoTask;
+            if (!remoteTask) return message.error("当前视频节点没有可下载的任务 ID");
+            if (generationRequestsRef.current.has(node.id)) return message.info("视频正在自动下载，请稍候");
+            if (!isAiConfigReady(effectiveConfig, remoteTask.model)) {
+                openConfigDialog(true);
+                return;
+            }
+            await runRemoteVideoAction(node.id, async () => {
+                try {
+                    const task = toVideoGenerationTask(remoteTask);
+                    const state = await pollVideoGenerationTask(effectiveConfig, task);
+                    if (state.status !== "completed") {
+                        setNodes((prev) => prev.map((item) => (item.id === node.id ? applyRemoteVideoTaskState(item, state) : item)));
+                        if (state.status === "failed") message.error(state.error);
+                        else message.info("视频尚未完成，请稍后再试");
+                        return;
+                    }
+                    const video = await storeGeneratedVideo(await downloadVideoGenerationTask(effectiveConfig, task, state));
+                    const current = nodesRef.current.find((item) => item.id === node.id) || node;
+                    const videoSize = fitNodeSize(video.width || current.width, video.height || current.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
+                    setNodes((prev) =>
+                        prev.map((item) =>
+                            item.id === node.id
+                                ? {
+                                      ...item,
+                                      width: videoSize.width,
+                                      height: videoSize.height,
+                                      position: { x: item.position.x + item.width / 2 - videoSize.width / 2, y: item.position.y + item.height / 2 - videoSize.height / 2 },
+                                      metadata: { ...item.metadata, ...videoMetadata(video), errorDetails: undefined, remoteVideoTask: mergeCanvasRemoteVideoTask(item.metadata?.remoteVideoTask, state) },
+                                  }
+                                : item,
+                        ),
+                    );
+                    message.success("视频已下载到画布");
+                } catch (error) {
+                    const errorDetails = error instanceof Error ? error.message : "视频下载失败";
+                    setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails } } : item)));
+                    message.error(errorDetails);
+                }
+            });
+        },
+        [effectiveConfig, isAiConfigReady, message, openConfigDialog, runRemoteVideoAction],
+    );
+
     const saveNodeAsset = useCallback(
         async (node: CanvasNodeData) => {
             if (node.type === CanvasNodeType.Text) {
@@ -2256,14 +2356,31 @@ function InfiniteCanvasPage() {
                     if (!isEmptyVideoNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: videoId }]);
                     const controller = startGenerationRequest(videoId, nodeId, nodeId, runController);
                     try {
-                        const video = await storeGeneratedVideo(
-                            await requestVideoGeneration(generationConfig, effectivePrompt, generationContext.referenceImages, generationContext.referenceVideos, generationContext.referenceAudios, {
+                        let result: VideoGenerationResult;
+                        try {
+                            result = await requestVideoGeneration(generationConfig, effectivePrompt, generationContext.referenceImages, generationContext.referenceVideos, generationContext.referenceAudios, {
                                 signal: controller.signal,
                                 onReferenceImagesOptimized: (count) => {
                                     message.info(`已自动优化 ${count} 张视频参考图：转为 JPEG，长边压缩至 ${VIDEO_REFERENCE_IMAGE_MAX_EDGE}px 内，以提高视频生成成功率。`);
                                 },
-                            }),
-                        );
+                                onTaskCreated: (task) => persistRemoteVideoTask(videoId, task),
+                                onTaskStateChange: (state) => {
+                                    setNodes((prev) => prev.map((item) => (item.id === videoId ? updateObservedRemoteVideoTask(item, state) : item)));
+                                },
+                            });
+                        } catch (error) {
+                            if (!(error instanceof VideoTaskPausedError)) throw error;
+                            setNodes((prev) => prev.map((item) => (item.id === videoId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails: videoTaskPausedMessage(error), remoteVideoTask: item.metadata?.remoteVideoTask || createCanvasRemoteVideoTask(error.task) } } : item)));
+                            return;
+                        }
+                        let video: UploadedFile;
+                        try {
+                            video = await storeGeneratedVideo(result);
+                        } catch (error) {
+                            const errorDetails = error instanceof Error ? error.message : "视频保存失败";
+                            setNodes((prev) => prev.map((item) => (item.id === videoId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails: `远端视频已完成，但保存到画布失败：${errorDetails}` } } : item)));
+                            return;
+                        }
                         const videoSize = fitNodeSize(video.width || spec.width, video.height || spec.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
                         setNodes((prev) => prev.map((node) => (node.id === videoId ? { ...node, width: videoSize.width, height: videoSize.height, position: { x: node.position.x + node.width / 2 - videoSize.width / 2, y: node.position.y + node.height / 2 - videoSize.height / 2 }, metadata: { ...node.metadata, ...videoMetadata(video), prompt: effectivePrompt, model: generationConfig.model, size: generationConfig.size, seconds: generationConfig.videoSeconds, vquality: generationConfig.vquality, generateAudio: generationConfig.videoGenerateAudio, watermark: generationConfig.videoWatermark, references: generationReferenceUrls(generationContext) } } : node)));
                     } finally {
@@ -2363,7 +2480,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistRemoteVideoTask, startGenerationRequest],
     );
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
@@ -2408,7 +2525,7 @@ function InfiniteCanvasPage() {
             const retryImages = retryReferenceImages || [];
 
             setRunningNodeId(node.id);
-            setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item)));
+            setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined, remoteVideoTask: item.type === CanvasNodeType.Video ? undefined : item.metadata?.remoteVideoTask } } : item)));
             const controller = startGenerationRequest(node.id, sourceNode.id, node.id);
 
             try {
@@ -2423,7 +2540,28 @@ function InfiniteCanvasPage() {
                     return;
                 }
                 if (node.type === CanvasNodeType.Video) {
-                    const video = await storeGeneratedVideo(await requestVideoGeneration(generationConfig, prompt, retryImages, context?.referenceVideos || [], context?.referenceAudios || [], { signal: controller.signal }));
+                    let result: VideoGenerationResult;
+                    try {
+                        result = await requestVideoGeneration(generationConfig, prompt, retryImages, context?.referenceVideos || [], context?.referenceAudios || [], {
+                            signal: controller.signal,
+                            onTaskCreated: (task) => persistRemoteVideoTask(node.id, task),
+                            onTaskStateChange: (state) => {
+                                setNodes((prev) => prev.map((item) => (item.id === node.id ? updateObservedRemoteVideoTask(item, state) : item)));
+                            },
+                        });
+                    } catch (error) {
+                        if (!(error instanceof VideoTaskPausedError)) throw error;
+                        setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails: videoTaskPausedMessage(error), remoteVideoTask: item.metadata?.remoteVideoTask || createCanvasRemoteVideoTask(error.task) } } : item)));
+                        return;
+                    }
+                    let video: UploadedFile;
+                    try {
+                        video = await storeGeneratedVideo(result);
+                    } catch (error) {
+                        const errorDetails = error instanceof Error ? error.message : "视频保存失败";
+                        setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails: `远端视频已完成，但保存到画布失败：${errorDetails}` } } : item)));
+                        return;
+                    }
                     const videoSize = fitNodeSize(video.width || node.width, video.height || node.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
                     setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, width: videoSize.width, height: videoSize.height, position: { x: item.position.x + item.width / 2 - videoSize.width / 2, y: item.position.y + item.height / 2 - videoSize.height / 2 }, metadata: { ...item.metadata, ...videoMetadata(video), prompt, model: generationConfig.model, size: generationConfig.size, seconds: generationConfig.videoSeconds, vquality: generationConfig.vquality, generateAudio: generationConfig.videoGenerateAudio, watermark: generationConfig.videoWatermark } } : item)));
                     return;
@@ -2464,7 +2602,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistRemoteVideoTask, startGenerationRequest],
     );
 
     const generateImageFromTextNode = useCallback(
@@ -2735,6 +2873,10 @@ function InfiniteCanvasPage() {
                             onToggleBatch={toggleBatchExpanded}
                             onSetBatchPrimary={setBatchPrimary}
                             onRetry={(node) => void handleRetryNode(node)}
+                            onQueryRemoteVideo={(node) => void queryRemoteVideoTask(node)}
+                            onDownloadRemoteVideo={(node) => void downloadRemoteVideo(node)}
+                            isRemoteVideoActionRunning={remoteVideoActionNodeIds.has(node.id)}
+                            isRemoteVideoDownloadBlocked={generationRequestsRef.current.has(node.id)}
                             onGenerateImage={generateImageFromTextNode}
                             onViewImage={(node) => setPreviewNodeId(node.id)}
                             onContextMenu={(event, id) => {
@@ -3313,8 +3455,61 @@ function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefine
     };
 }
 
+function createCanvasRemoteVideoTask(task: VideoGenerationTask): CanvasRemoteVideoTask {
+    return { ...task, remoteStatus: "queued", createdAt: Date.now() };
+}
+
+function mergeCanvasRemoteVideoTask(task: CanvasRemoteVideoTask | undefined, state: VideoGenerationTaskState) {
+    if (!task) return undefined;
+    const completed = state.status === "completed" || isCompletedRemoteVideoStatus(task.remoteStatus);
+    const stateProgress = state.progress;
+    const progress = completed ? 100 : typeof stateProgress === "number" && typeof task.progress === "number" ? Math.max(task.progress, stateProgress) : stateProgress ?? task.progress;
+    return {
+        ...task,
+        remoteStatus: isCompletedRemoteVideoStatus(task.remoteStatus) && state.status === "pending" ? task.remoteStatus : state.remoteStatus,
+        progress,
+        lastCheckedAt: Date.now(),
+    };
+}
+
+function updateObservedRemoteVideoTask(node: CanvasNodeData, state: VideoGenerationTaskState) {
+    const current = node.metadata?.remoteVideoTask;
+    if (!current) return node;
+    const remoteVideoTask = mergeCanvasRemoteVideoTask(current, state);
+    if (current.remoteStatus === remoteVideoTask?.remoteStatus && current.progress === remoteVideoTask?.progress) return node;
+    return { ...node, metadata: { ...node.metadata, remoteVideoTask } };
+}
+
+function toVideoGenerationTask(task: CanvasRemoteVideoTask): VideoGenerationTask {
+    return { id: task.id, provider: task.provider, model: task.model };
+}
+
+function applyRemoteVideoTaskState(node: CanvasNodeData, state: VideoGenerationTaskState): CanvasNodeData {
+    if (node.metadata?.content) return node;
+    const remoteVideoTask = mergeCanvasRemoteVideoTask(node.metadata?.remoteVideoTask, state);
+    if (state.status === "failed") return { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: state.error, remoteVideoTask } };
+    if (state.status === "completed") return { ...node, metadata: { ...node.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails: "视频已完成，可以下载。", remoteVideoTask } };
+    return { ...node, metadata: { ...node.metadata, errorDetails: undefined, remoteVideoTask } };
+}
+
+function isCompletedRemoteVideoStatus(status: string) {
+    return ["completed", "succeeded", "done"].includes(status);
+}
+
+function videoTaskPausedMessage(error: VideoTaskPausedError) {
+    if (error.reason === "timeout") return "自动等待已到上限，远端任务可能仍在生成，可继续查询进度。";
+    if (error.reason === "download") return `视频下载失败：${error.message}，可稍后重试。`;
+    return `自动查询已中断：${error.message}，可稍后继续查询。`;
+}
+
 function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
-    return nodes.map((node) => (node.metadata?.status === "loading" ? { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: "页面刷新后生成已中断，请重新生成。" } } : node));
+    return nodes.map((node) => {
+        if (node.metadata?.status !== NODE_STATUS_LOADING) return node;
+        if (node.type === CanvasNodeType.Video && node.metadata.remoteVideoTask) {
+            return { ...node, metadata: { ...node.metadata, status: NODE_STATUS_RECOVERABLE, errorDetails: "页面刷新已停止自动查询，可继续查询原视频任务。" } };
+        }
+        return { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: "页面刷新后生成已中断，请重新生成。" } };
+    });
 }
 
 function isGenerationCanceled(error: unknown) {

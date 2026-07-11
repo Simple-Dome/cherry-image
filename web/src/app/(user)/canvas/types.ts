@@ -17,9 +17,19 @@ export enum CanvasNodeType {
     Audio = "audio",
 }
 
-export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
+export type CanvasNodeStatus = "idle" | "success" | "loading" | "recoverable" | "error";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
+
+export type CanvasRemoteVideoTask = {
+    id: string;
+    provider: "openai" | "seedance";
+    model: string;
+    remoteStatus: string;
+    progress?: number;
+    createdAt: number;
+    lastCheckedAt?: number;
+};
 
 export type CanvasNodeMetadata = {
     content?: string;
@@ -56,6 +66,7 @@ export type CanvasNodeMetadata = {
     mimeType?: string;
     bytes?: number;
     durationMs?: number;
+    remoteVideoTask?: CanvasRemoteVideoTask;
 };
 
 export type CanvasNodeData = {

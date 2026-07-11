@@ -17,7 +17,7 @@ import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio, seedanceRefe
 import { VIDEO_REFERENCE_IMAGE_MAX_EDGE } from "@/lib/video-reference-preprocess";
 import { deleteStoredMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
-import { createVideoGenerationTask, getVideoPollingPolicy, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
+import { createVideoGenerationTask, downloadVideoGenerationTask, getVideoPollingPolicy, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -302,7 +302,7 @@ export default function VideoPage() {
             for (let attempt = 0; attempt < pollingPolicy.maxAttempts; attempt += 1) {
                 const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task);
                 if (state.status === "completed") {
-                    const stored = await storeGeneratedVideo(state.result);
+                    const stored = await storeGeneratedVideo(await downloadVideoGenerationTask(configOverride || taskConfig, log.task, state));
                     const nextVideo: GeneratedVideo = {
                         id: nanoid(),
                         url: stored.url,
