@@ -10,6 +10,8 @@ RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lock
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY web ./
+ARG NEXT_PUBLIC_DOC_URL=https://gptch.cloud/image/manual/index.html
+ENV NEXT_PUBLIC_DOC_URL=$NEXT_PUBLIC_DOC_URL
 RUN bun run build
 
 # 运行镜像：只启动 Next.js，AI 请求由浏览器前台直连用户自己的接口。

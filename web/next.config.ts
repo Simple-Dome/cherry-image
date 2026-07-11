@@ -35,6 +35,9 @@ export default function nextConfig(phase: string): NextConfig {
         output: "standalone",
         outputFileTracingRoot: webDir,
         ...(basePath ? { basePath } : {}),
+        turbopack: {
+            root: webDir,
+        },
         allowedDevOrigins: isDev ? ["*.*.*.*"] : [],
         typescript: {
             ignoreBuildErrors: true,
