@@ -60,7 +60,6 @@ export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://gptch.cloud";
-const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -355,7 +354,8 @@ function normalizeChannels(config: AiConfig) {
 }
 
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
-    return apiFormat === "gemini" ? GEMINI_BASE_URL : OPENAI_BASE_URL;
+    if (apiFormat !== "gemini") return OPENAI_BASE_URL;
+    return typeof window === "undefined" ? OPENAI_BASE_URL : window.location.origin;
 }
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {

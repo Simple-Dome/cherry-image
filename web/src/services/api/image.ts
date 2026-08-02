@@ -4,6 +4,7 @@ import { buildApiUrl, resolveModelRequestConfig, type AiConfig, type ModelChanne
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
+import { findImageSizePreset, findLegacyImageSizeSelection } from "@/lib/image-size-presets";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 
@@ -580,15 +581,29 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     for (const image of references) {
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
     }
+    const imageConfig = resolveGeminiImageConfig(config);
     const response = await axios.post<GeminiPayload>(
         geminiApiUrl(config, "generateContent"),
         {
-            ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"] } }),
+            ...toGeminiBody(config, [{ role: "user", content: prompt }], {
+                generationConfig: {
+                    responseModalities: ["TEXT", "IMAGE"],
+                    ...(imageConfig ? { imageConfig } : {}),
+                },
+            }),
             contents: [{ role: "user", parts }],
         },
         { headers: geminiHeaders(config), signal: options?.signal },
     );
     return parseGeminiImagePayload(response.data);
+}
+
+function resolveGeminiImageConfig(config: Pick<AiConfig, "size" | "quality">) {
+    const size = config.size.trim();
+    if (!size || size.toLowerCase() === "auto") return undefined;
+    const selection = findImageSizePreset(size) || findLegacyImageSizeSelection(size, config.quality);
+    if (!selection) throw new Error("Gemini 图像尺寸仅支持画布中的 1K、2K、4K 和标准图像比例");
+    return { aspectRatio: selection.ratio, imageSize: selection.tier };
 }
 
 function parseGeminiImagePayload(payload: GeminiPayload) {
