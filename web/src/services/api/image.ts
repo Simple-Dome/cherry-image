@@ -5,6 +5,7 @@ import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
+import { findImageSizePreset, findLegacyImageSizeSelection } from "@/lib/image-size-presets";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 
@@ -113,9 +114,6 @@ const IMAGE_MAX_EDGE = 3840;
 const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
 
-const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
-const GEMINI_IMAGE_SIZE_BY_QUALITY: Record<string, string> = { low: "1K", medium: "2K", high: "4K", standard: "1K", hd: "2K" };
-
 function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
     const normalized = QUALITY_ALIASES[value] || value;
@@ -192,42 +190,6 @@ function resolveRequestSize(quality: string | undefined, size: string) {
     }
     if (value.includes(":")) return resolveSize(quality, value);
     throw new Error("图像尺寸格式不支持，请使用 auto、9:16 或 1024x1024");
-}
-
-function resolveGeminiImageConfig(config: AiConfig) {
-    const value = config.size.trim();
-    const dimensions = parseImageDimensions(value);
-    const ratio = dimensions ? `${dimensions.width}:${dimensions.height}` : value;
-    const aspectRatio = value && value.toLowerCase() !== "auto" ? closestGeminiAspectRatio(ratio) : undefined;
-    const imageSize = supportsGeminiImageSize(config.model) ? resolveGeminiImageSize(config.quality, dimensions) : undefined;
-    const image = { ...(aspectRatio ? { aspectRatio } : {}), ...(imageSize ? { imageSize } : {}) };
-    return Object.keys(image).length ? { responseFormat: { image } } : {};
-}
-
-function closestGeminiAspectRatio(value: string) {
-    const ratio = parseImageRatio(value);
-    const target = ratio.width / ratio.height;
-    return GEMINI_SUPPORTED_RATIOS.reduce((best, item) => {
-        const current = parseRatioValue(item);
-        const bestRatio = parseRatioValue(best);
-        return Math.abs(current.width / current.height - target) < Math.abs(bestRatio.width / bestRatio.height - target) ? item : best;
-    });
-}
-
-function resolveGeminiImageSize(quality: string, dimensions: { width: number; height: number } | null) {
-    const normalizedQuality = normalizeQuality(quality);
-    if (normalizedQuality) return GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality];
-    if (!dimensions) return undefined;
-    const edge = Math.max(dimensions.width, dimensions.height);
-    if (edge <= 768) return "512";
-    if (edge <= 1536) return "1K";
-    if (edge <= 3072) return "2K";
-    return "4K";
-}
-
-function supportsGeminiImageSize(model: string) {
-    const value = model.toLowerCase();
-    return value.includes("gemini-3") || value.includes("3.1") || value.includes("3-pro");
 }
 
 function resolveImageDataUrl(item: Record<string, unknown>) {
@@ -683,15 +645,29 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     for (const image of references) {
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
     }
+    const imageConfig = resolveGeminiImageConfig(config);
     const response = await axios.post<GeminiPayload>(
         geminiApiUrl(config, "generateContent"),
         {
-            ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
+            ...toGeminiBody(config, [{ role: "user", content: prompt }], {
+                generationConfig: {
+                    responseModalities: ["TEXT", "IMAGE"],
+                    ...(imageConfig ? { imageConfig } : {}),
+                },
+            }),
             contents: [{ role: "user", parts }],
         },
         { headers: geminiHeaders(config), signal: options?.signal },
     );
     return parseGeminiImagePayload(response.data);
+}
+
+function resolveGeminiImageConfig(config: Pick<AiConfig, "size" | "quality">) {
+    const size = config.size.trim();
+    if (!size || size.toLowerCase() === "auto") return undefined;
+    const selection = findImageSizePreset(size) || findLegacyImageSizeSelection(size, config.quality);
+    if (!selection) throw new Error("Gemini 图像尺寸仅支持画布中的 1K、2K、4K 和标准图像比例");
+    return { aspectRatio: selection.ratio, imageSize: selection.tier };
 }
 
 function parseGeminiImagePayload(payload: GeminiPayload) {

@@ -2,6 +2,7 @@ import { defaultConfig, resolveModelForCapability, type AiConfig } from "@/store
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
+import { CANVAS_IMAGE_QUALITY, resolveCanvasImageRequestSize } from "@/lib/image-size-presets";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
@@ -90,12 +91,14 @@ export function getInputSummary(inputs: NodeGenerationInput[]) {
 }
 
 export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
+    const configuredQuality = node?.metadata?.quality || config.quality || defaultConfig.quality;
+    const configuredSize = node?.metadata?.size || config.size || defaultConfig.size;
     return {
         ...config,
         model: resolveModelForCapability(config, node?.metadata?.model, mode),
         reasoningEffort: node?.metadata?.reasoningEffort || config.reasoningEffort || defaultConfig.reasoningEffort,
-        quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
-        size: node?.metadata?.size || config.size || defaultConfig.size,
+        quality: mode === "image" ? CANVAS_IMAGE_QUALITY : configuredQuality,
+        size: mode === "image" ? resolveCanvasImageRequestSize(configuredSize, configuredQuality) : configuredSize,
         background: node?.metadata?.background ?? config.background ?? defaultConfig.background,
         videoSeconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
         vquality: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
@@ -110,7 +113,13 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
 }
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
-    return nodes.map((node) => (node.metadata?.status === "loading" ? { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: "页面刷新后生成已中断，请重新生成。" } } : node));
+    return nodes.map((node) => {
+        if (node.metadata?.status !== "loading") return node;
+        if (node.type === CanvasNodeType.Video && node.metadata.remoteVideoTask) {
+            return { ...node, metadata: { ...node.metadata, status: "recoverable" as const, errorDetails: "页面刷新已停止自动查询，可继续查询原视频任务。" } };
+        }
+        return { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: "页面刷新后生成已中断，请重新生成。" } };
+    });
 }
 
 export function isGenerationCanceled(error: unknown) {

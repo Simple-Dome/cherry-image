@@ -21,9 +21,19 @@ export enum CanvasNodeType {
 // 节点类型放开为字符串,内置类型用 CanvasNodeType,插件类型为 "<pluginId>:<name>"
 export type CanvasNodeTypeId = CanvasNodeType | (string & {});
 
-export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
+export type CanvasNodeStatus = "idle" | "success" | "loading" | "recoverable" | "error";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
+
+export type CanvasRemoteVideoTask = {
+    id: string;
+    provider: "openai" | "seedance" | "plugin";
+    model: string;
+    remoteStatus: string;
+    progress?: number;
+    createdAt: number;
+    lastCheckedAt?: number;
+};
 
 export type CanvasNodeMetadata = {
     content?: string;
@@ -64,6 +74,7 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     groupId?: string;
     interactive?: boolean; // 插件节点「交互 ⇄ 移动」开关状态(见 CanvasNodeDefinition.interactionToggle)
+    remoteVideoTask?: CanvasRemoteVideoTask;
 };
 
 export type CanvasNodeData = {

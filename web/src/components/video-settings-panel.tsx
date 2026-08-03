@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { Switch } from "antd";
+import { Slider, Switch } from "antd";
 
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
@@ -20,12 +20,11 @@ const sizeOptions = [
     { value: "auto", label: "auto", width: 0, height: 0 },
 ];
 
-const secondOptions = [6, 10, 12, 16, 20];
+const secondOptions = Array.from({ length: 15 }, (_, index) => index + 1);
 
 export const videoResolutionOptions = resolutionOptions.map((item) => ({ value: item.value, label: item.label }));
 export const videoSizeOptions = sizeOptions.map((item) => ({ value: item.value, label: item.label }));
 export const videoSecondOptions = secondOptions.map((value) => String(value));
-
 type VideoSettingsPanelProps = {
     config: AiConfig;
     onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark", value: string) => void;
@@ -89,14 +88,19 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                     </div>
                 </SettingGroup>
-                <SettingGroup title="秒数" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-2.5">
-                        {secondOptions.map((value) => (
-                            <OptionPill key={value} selected={seconds === String(value)} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
-                                {value}s
-                            </OptionPill>
-                        ))}
-                        <NumberInput value={seconds} min={1} max={20} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />
+                <SettingGroup title="视频时长" color={theme.node.muted}>
+                    <div className="flex items-center gap-3">
+                        <Slider
+                            className="flex-1"
+                            min={1}
+                            max={15}
+                            value={clampVideoSeconds(seconds)}
+                            tooltip={{ open: false }}
+                            onChange={(value) => onConfigChange("videoSeconds", String(value))}
+                        />
+                        <span className="w-9 text-right text-sm" style={{ color: theme.node.text }}>
+                            {clampVideoSeconds(seconds)}s
+                        </span>
                     </div>
                 </SettingGroup>
             </div>
@@ -178,6 +182,12 @@ export function videoSizeLabel(value: string) {
 export function videoSecondsLabel(value: string) {
     if (String(value).trim() === "-1") return "智能";
     return `${value || "6"}s`;
+}
+
+function clampVideoSeconds(value: string) {
+    const parsed = Math.round(Number(value));
+    if (!Number.isFinite(parsed)) return 6;
+    return Math.min(15, Math.max(1, parsed));
 }
 
 export function normalizeVideoSizeValue(value: string) {

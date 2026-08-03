@@ -17,6 +17,12 @@ type InfiniteCanvasProps = {
     children: React.ReactNode;
 };
 
+const INTERACTIVE_WHEEL_SELECTOR = "[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown";
+
+function shouldPreventCanvasWheelDefault(target: EventTarget | null) {
+    return !(target instanceof Element && target.closest(INTERACTIVE_WHEEL_SELECTOR));
+}
+
 export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines", onViewportChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: InfiniteCanvasProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const panState = useRef({
@@ -64,7 +70,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
 
     const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
         const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest("[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown")) return;
+        if (target?.closest(INTERACTIVE_WHEEL_SELECTOR)) return;
 
         const delta = -event.deltaY;
         const factor = Math.pow(1.1, delta / 100);
@@ -167,11 +173,8 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
         const container = containerRef.current;
         if (!container) return;
 
-        // 阻止画布滚动导致页面滚动;但浮层(创建菜单/弹窗等)内允许原生滚动
         const preventWheelScroll = (event: WheelEvent) => {
-            const target = event.target instanceof Element ? event.target : null;
-            if (target?.closest("[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown")) return;
-            event.preventDefault();
+            if (shouldPreventCanvasWheelDefault(event.target)) event.preventDefault();
         };
         container.addEventListener("wheel", preventWheelScroll, { passive: false });
         return () => container.removeEventListener("wheel", preventWheelScroll);

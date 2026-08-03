@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react";
 import { ConfigProvider, Switch } from "antd";
 
 import { type CanvasTheme } from "@/lib/canvas-theme";
+import { findImageSizePreset, findLegacyImageSizeSelection, IMAGE_ASPECT_RATIOS, IMAGE_SIZE_TIERS, resolveCanvasImageRequestSize, resolveImagePresetSize, type ImageAspectRatio, type ImageSizeTier } from "@/lib/image-size-presets";
 import type { AiConfig } from "@/stores/use-config-store";
 
 const qualityOptions = [
@@ -12,7 +13,7 @@ const qualityOptions = [
 ];
 const DIMENSION_STEP = 16;
 
-const aspectOptions = [
+const legacyAspectOptions = [
     { value: "1:1", label: "1:1", width: 1024, height: 1024, icon: "square" },
     { value: "3:2", label: "3:2", width: 1536, height: 1024, icon: "landscape" },
     { value: "2:3", label: "2:3", width: 1024, height: 1536, icon: "portrait" },
@@ -27,9 +28,13 @@ const aspectOptions = [
     { value: "9:16-4k", label: "9:16(4k)", size: "2160x3840", width: 2160, height: 3840, icon: "portrait" },
     { value: "auto", label: "auto", width: 0, height: 0, icon: "auto" },
 ];
+const resolutionAspectOptions = IMAGE_ASPECT_RATIOS.map((value) => {
+    const [width, height] = value.split(":").map(Number);
+    return { value, label: value, width, height, icon: width === height ? "square" : width > height ? "landscape" : "portrait" };
+});
 
 export const imageQualityOptions = qualityOptions.map((item) => ({ value: item.value, label: item.label }));
-export const imageAspectOptions = aspectOptions.map((item) => ({ value: item.size || item.value, label: item.label }));
+export const imageAspectOptions = legacyAspectOptions.map((item) => ({ value: item.size || item.value, label: item.label }));
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
@@ -39,19 +44,35 @@ type ImageSettingsPanelProps = {
     className?: string;
     maxCount?: number;
     quickCount?: number;
+    mode?: "legacy-quality" | "resolution-tier";
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10 }: ImageSettingsPanelProps) {
+export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10, mode = "legacy-quality" }: ImageSettingsPanelProps) {
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const quality = config.quality || "auto";
     const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
     const activeSize = config.size || "auto";
     const transparentBackground = config.background === "transparent";
-    const selectedAspect = aspectOptions.find((item) => (item.size || item.value) === activeSize || item.value === activeSize);
-    const dimensions = readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
+    const legacySelectedAspect = legacyAspectOptions.find((item) => (item.size || item.value) === activeSize || item.value === activeSize);
+    const initialResolutionSelection = findImageSizePreset(activeSize) || findLegacyImageSizeSelection(activeSize, quality) || { tier: "1K" as const, ratio: "1:1" as const };
+    const [resolutionTier, setResolutionTier] = useState<ImageSizeTier>(initialResolutionSelection.tier);
+    const [resolutionRatio, setResolutionRatio] = useState<ImageAspectRatio>(initialResolutionSelection.ratio);
+    const activeResolutionSelection = findImageSizePreset(activeSize) || findLegacyImageSizeSelection(activeSize, quality);
+    const resolvedDimensionSize = mode === "resolution-tier" ? resolveCanvasImageRequestSize(activeSize, quality) : activeSize;
+    const dimensions = readSizeDimensions(resolvedDimensionSize, legacySelectedAspect || legacyAspectOptions[0]);
+    const effectiveResolutionTier = activeResolutionSelection?.tier || resolutionTier;
+    const effectiveResolutionRatio = activeResolutionSelection?.ratio || resolutionRatio;
     const selectAspect = (value: string) => {
-        const option = aspectOptions.find((item) => item.value === value);
+        const option = legacyAspectOptions.find((item) => item.value === value);
         onConfigChange("size", option?.size || option?.value || "auto");
+    };
+    const selectResolutionTier = (tier: ImageSizeTier) => {
+        setResolutionTier(tier);
+        onConfigChange("size", resolveImagePresetSize(tier, effectiveResolutionRatio));
+    };
+    const selectResolutionRatio = (ratio: ImageAspectRatio) => {
+        setResolutionRatio(ratio);
+        onConfigChange("size", resolveImagePresetSize(effectiveResolutionTier, ratio));
     };
     const updateDimension = (key: "width" | "height", value: number | null) => {
         const next = Math.max(1, Math.floor(value || dimensions[key] || 1024));
@@ -72,16 +93,29 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 }}
             >
                 {showTitle ? <div className="text-lg font-semibold">图像设置</div> : null}
-                <div className="space-y-2.5">
-                    <SettingTitle color={theme.node.muted}>质量</SettingTitle>
-                    <div className="grid grid-cols-4 gap-2.5">
-                        {qualityOptions.map((item) => (
-                            <OptionPill key={item.value} selected={quality === item.value} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
-                                {item.label}
-                            </OptionPill>
-                        ))}
+                {mode === "legacy-quality" ? (
+                    <div className="space-y-2.5">
+                        <SettingTitle color={theme.node.muted}>质量</SettingTitle>
+                        <div className="grid grid-cols-4 gap-2.5">
+                            {qualityOptions.map((item) => (
+                                <OptionPill key={item.value} selected={quality === item.value} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
+                                    {item.label}
+                                </OptionPill>
+                            ))}
+                        </div>
                     </div>
-                </div>
+                ) : (
+                    <div className="space-y-2.5">
+                        <SettingTitle color={theme.node.muted}>基准分辨率</SettingTitle>
+                        <div className="grid grid-cols-3 gap-2.5">
+                            {IMAGE_SIZE_TIERS.map((tier) => (
+                                <OptionPill key={tier} selected={(activeResolutionSelection?.tier || resolutionTier) === tier} theme={theme} onClick={() => selectResolutionTier(tier)}>
+                                    {tier}
+                                </OptionPill>
+                            ))}
+                        </div>
+                    </div>
+                )}
                 <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-3">
                         <SettingTitle color={theme.node.muted}>尺寸</SettingTitle>
@@ -101,16 +135,20 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </div>
                 <div className="space-y-2.5">
-                    <SettingTitle color={theme.node.muted}>宽高比</SettingTitle>
+                    <SettingTitle color={theme.node.muted}>图像比例</SettingTitle>
                     <div className="grid grid-cols-4 gap-2.5">
-                        {aspectOptions.map((item) => (
+                        {(mode === "resolution-tier" ? resolutionAspectOptions : legacyAspectOptions).map((item) => (
                             <button
                                 key={item.value}
                                 type="button"
                                 className="flex h-[72px] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border bg-transparent text-sm transition hover:opacity-80"
-                                style={{ borderColor: selectedAspect?.value === item.value ? theme.node.text : theme.node.stroke, background: "transparent", color: theme.node.text }}
+                                style={{
+                                    borderColor: (mode === "resolution-tier" ? activeResolutionSelection?.ratio === item.value : legacySelectedAspect?.value === item.value) ? theme.node.text : theme.node.stroke,
+                                    background: "transparent",
+                                    color: theme.node.text,
+                                }}
                                 onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => selectAspect(item.value)}
+                                onClick={() => (mode === "resolution-tier" ? selectResolutionRatio(item.value as ImageAspectRatio) : selectAspect(item.value))}
                             >
                                 <AspectIcon type={item.icon} width={item.width} height={item.height} color={theme.node.text} />
                                 <span>{item.label}</span>
@@ -163,7 +201,7 @@ export function imageQualityLabel(value: string) {
 }
 
 export function imageSizeLabel(size: string) {
-    return aspectOptions.find((item) => (item.size || item.value) === size || item.value === size)?.label || size;
+    return legacyAspectOptions.find((item) => (item.size || item.value) === size || item.value === size)?.label || size;
 }
 
 function OptionPill({ selected, theme, onClick, children }: { selected: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode }) {

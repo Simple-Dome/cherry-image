@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronRight, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Video } from "lucide-react";
+import { ChevronRight, Download, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
@@ -50,6 +50,10 @@ type CanvasNodeProps = {
     onToggleBatch?: (nodeId: string) => void;
     onSetBatchPrimary?: (node: CanvasNodeData) => void;
     onRetry?: (node: CanvasNodeData) => void;
+    onQueryRemoteVideo?: (node: CanvasNodeData) => void;
+    onDownloadRemoteVideo?: (node: CanvasNodeData) => void;
+    isRemoteVideoActionRunning?: boolean;
+    isRemoteVideoDownloadBlocked?: boolean;
     onGenerateImage?: (node: CanvasNodeData) => void;
     onViewImage?: (node: CanvasNodeData) => void;
     onContextMenu: (event: React.MouseEvent, nodeId: string) => void;
@@ -71,6 +75,10 @@ type NodeContentRendererProps = {
     onStopEditing: () => void;
     mentionReferences: CanvasResourceReference[];
     onRetry?: (node: CanvasNodeData) => void;
+    onQueryRemoteVideo?: (node: CanvasNodeData) => void;
+    onDownloadRemoteVideo?: (node: CanvasNodeData) => void;
+    isRemoteVideoActionRunning: boolean;
+    isRemoteVideoDownloadBlocked: boolean;
     onGenerateImage?: (node: CanvasNodeData) => void;
     onToggleBatch?: () => void;
     onSetBatchPrimary?: () => void;
@@ -111,6 +119,10 @@ export const CanvasNode = React.memo(function CanvasNode({
     onToggleBatch,
     onSetBatchPrimary,
     onRetry,
+    onQueryRemoteVideo,
+    onDownloadRemoteVideo,
+    isRemoteVideoActionRunning = false,
+    isRemoteVideoDownloadBlocked = false,
     onGenerateImage,
     onViewImage,
     onContextMenu,
@@ -406,6 +418,10 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onContentChange={onContentChange}
                         onStopEditing={() => setIsEditingContent(false)}
                         onRetry={onRetry}
+                        onQueryRemoteVideo={onQueryRemoteVideo}
+                        onDownloadRemoteVideo={onDownloadRemoteVideo}
+                        isRemoteVideoActionRunning={isRemoteVideoActionRunning}
+                        isRemoteVideoDownloadBlocked={isRemoteVideoDownloadBlocked}
                         onGenerateImage={onGenerateImage}
                         onToggleBatch={() => onToggleBatch?.(data.id)}
                         onSetBatchPrimary={() => onSetBatchPrimary?.(data)}
@@ -434,6 +450,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
+    if (props.node.type === CanvasNodeType.Video && props.node.metadata?.remoteVideoTask && !props.node.metadata.content && props.node.metadata.status !== "error") return <VideoTaskProgressContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;
     if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
 
@@ -447,6 +464,60 @@ function NodeContent(props: NodeContentRendererProps) {
         return <PluginContent ctx={props.pluginContext} />;
     }
     return <MissingPluginContent theme={props.theme} type={props.node.type} />;
+}
+
+function VideoTaskProgressContent({ node, theme, onQueryRemoteVideo, onDownloadRemoteVideo, isRemoteVideoActionRunning, isRemoteVideoDownloadBlocked }: NodeContentRendererProps) {
+    const task = node.metadata!.remoteVideoTask!;
+    const completed = ["completed", "succeeded", "done"].includes(task.remoteStatus);
+    const paused = node.metadata?.status === "recoverable";
+    const progress = completed ? 100 : task.progress;
+    const progressLabel = typeof progress === "number" ? `${Math.round(progress)}%` : "";
+    return (
+        <div className="flex h-full w-full max-w-[320px] flex-col items-center justify-center gap-3 px-5 text-center" style={{ color: theme.node.text }}>
+            <div className="text-sm font-medium">{completed ? "视频已完成" : paused ? "自动查询已暂停" : "视频生成中"}</div>
+            <div className="w-full max-w-56 overflow-hidden rounded-full" style={{ height: 4, background: theme.node.stroke }}>
+                <div className={`h-full rounded-full transition-[width] duration-300 ${typeof progress === "number" ? "" : "animate-pulse opacity-40"}`} style={{ width: typeof progress === "number" ? `${progress}%` : "100%", background: theme.node.activeStroke }} />
+            </div>
+            <div className="text-xs opacity-60">
+                状态：{task.remoteStatus}
+                {progressLabel ? ` · ${progressLabel}` : ""}
+            </div>
+            <div className="max-w-full truncate text-[10px] opacity-45" title={task.id}>任务 ID：{task.id}</div>
+            {node.metadata?.errorDetails ? <div className="text-xs leading-5" style={{ color: theme.node.muted }}>{node.metadata.errorDetails}</div> : null}
+            <div className="flex gap-2">
+                <button
+                    type="button"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition hover:scale-[1.02] disabled:cursor-wait disabled:opacity-50"
+                    style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+                    disabled={isRemoteVideoActionRunning}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onQueryRemoteVideo?.(node);
+                    }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                >
+                    <RefreshCw className={`size-3.5 ${isRemoteVideoActionRunning ? "animate-spin" : ""}`} />
+                    立即查询
+                </button>
+                {completed ? (
+                    <button
+                        type="button"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition hover:scale-[1.02] disabled:cursor-wait disabled:opacity-50"
+                        style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+                        disabled={isRemoteVideoActionRunning || isRemoteVideoDownloadBlocked}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onDownloadRemoteVideo?.(node);
+                        }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <Download className="size-3.5" />
+                        下载视频
+                    </button>
+                ) : null}
+            </div>
+        </div>
+    );
 }
 
 const nodeContentRenderers = {
