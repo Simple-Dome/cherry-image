@@ -1,7 +1,7 @@
 import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { App, Empty, Input, Popconfirm, Select, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Check, ChevronRight, Download, Eye, FileText, Image as ImageIcon, ListChecks, Music2, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
+import { BookOpen, Check, ChevronRight, Clapperboard, Download, Eye, FileText, Image as ImageIcon, ListChecks, Music2, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
 import { motion } from "motion/react";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
@@ -36,6 +36,7 @@ type Props = {
 const NODE_TYPE_ICON: Record<string, typeof Square> = {
     [CanvasNodeType.Image]: ImageIcon,
     [CanvasNodeType.Video]: Video,
+    [CanvasNodeType.Storyboard]: Clapperboard,
     [CanvasNodeType.Audio]: Music2,
     [CanvasNodeType.Text]: Type,
     [CanvasNodeType.Config]: Settings2,
@@ -134,6 +135,7 @@ const NODE_FILTER_OPTIONS = [
     { label: "全部", value: "all" },
     { label: "图片", value: CanvasNodeType.Image },
     { label: "视频", value: CanvasNodeType.Video },
+    { label: "分镜", value: CanvasNodeType.Storyboard },
     { label: "文本", value: CanvasNodeType.Text },
     { label: "音频", value: CanvasNodeType.Audio },
     { label: "配置", value: CanvasNodeType.Config },
@@ -141,6 +143,10 @@ const NODE_FILTER_OPTIONS = [
 ];
 
 function nodePreviewText(node: CanvasNodeData) {
+    if (node.type === CanvasNodeType.Storyboard) {
+        const shots = node.metadata?.storyboardShots || [];
+        return `${shots.length} 个镜头 · ${shots.reduce((total, shot) => total + (Number(shot.duration) || 0), 0)} 秒`;
+    }
     if (node.type === CanvasNodeType.Text) return node.metadata?.content || node.metadata?.prompt || "";
     return getNodeDefinition(node.type)?.title || node.type;
 }

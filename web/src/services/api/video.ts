@@ -4,6 +4,7 @@ import { nanoid } from "nanoid";
 import { UPLOAD_BASE } from "@/constant/env";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { getImageBlob, imageToDataUrl } from "@/services/image-storage";
+import { isJimeng933VideoConfig, normalizeJimeng933Ratio, normalizeJimeng933Resolution, validateJimeng933VideoInput, type VideoImageRole, type VideoShot } from "@/lib/jimeng933-video";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError } from "@/lib/seedance-video";
 import { optimizeVideoReferenceImageDataUrl } from "@/lib/video-reference-preprocess";
 import { buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
@@ -24,6 +25,16 @@ type SeedanceTask = {
     video_url?: string;
 };
 type ApiEnvelope<T> = T | { code?: number | string; data?: T | null; msg?: string; message?: string; error?: { message?: string } };
+type Jimeng933TaskResponse = {
+    id?: string;
+    task_id?: string;
+    model?: string;
+    status?: string;
+    progress?: number;
+    download_url?: string;
+    error?: { code?: string; message?: string };
+    message?: string;
+};
 type VideoReferencePolicy = "imageBase64Only" | "allUrlMultimodal";
 
 const BASE64_IMAGE_ONLY_VIDEO_MODELS = new Set(["video-v1-10s", "video-v1-5s", "video-v1-15s"]);
@@ -34,7 +45,17 @@ const VIDEO_REFERENCE_POLICY_LIMITS = {
 } as const;
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "plugin"; model: string };
+export type VideoGenerationInput = {
+    prompt: string;
+    negativePrompt?: string;
+    seed?: number;
+    images: ReferenceImage[];
+    videos: ReferenceVideo[];
+    audios: ReferenceAudio[];
+    imageRoles?: Record<string, VideoImageRole>;
+    shots?: VideoShot[];
+};
+export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "jimeng933" | "plugin"; model: string };
 export type VideoGenerationTaskState =
     | { status: "pending"; remoteStatus: string; progress?: number }
     | { status: "completed"; remoteStatus: string; progress?: number; result?: VideoGenerationResult; resultUrl?: string }
@@ -87,8 +108,8 @@ function aiHeaders(config: AiConfig, contentType?: string) {
     };
 }
 
-export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: VideoRequestOptions): Promise<VideoGenerationResult> {
-    const task = await createVideoGenerationTask(config, prompt, references, videoReferences, audioReferences, options);
+export async function requestVideoGeneration(config: AiConfig, input: VideoGenerationInput, options?: VideoRequestOptions): Promise<VideoGenerationResult> {
+    const task = await createVideoGenerationTask(config, input, options);
     options?.onTaskCreated?.(task);
     const pollingPolicy = getVideoPollingPolicy(task);
     for (let attempt = 0; attempt < pollingPolicy.maxAttempts; attempt += 1) {
@@ -125,16 +146,18 @@ export function getVideoPollingPolicy(task: Pick<VideoGenerationTask, "provider"
     };
 }
 
-export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: VideoRequestOptions): Promise<VideoGenerationTask> {
+export async function createVideoGenerationTask(config: AiConfig, input: VideoGenerationInput, options?: VideoRequestOptions): Promise<VideoGenerationTask> {
     const selectedModel = (config.model || config.videoModel).trim();
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const script = resolveModelScript(config, selectedModel);
-    if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
+    if (script) return createPluginVideoTask(requestConfig, selectedModel, script, input.prompt, input.images, options);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (isJimeng933VideoConfig(requestConfig)) return createJimeng933VideoTask(requestConfig, selectedModel, input, options);
+    if (input.shots !== undefined) throw new Error("当前视频渠道不支持结构化分镜");
     if (isSeedanceVideoConfig(requestConfig)) {
-        return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+        return createSeedanceTask(requestConfig, selectedModel, input.prompt, input.images, input.videos, input.audios, options);
     }
-    return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    return createOpenAIVideoTask(requestConfig, selectedModel, input.prompt, input.images, input.videos, input.audios, options);
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: Pick<VideoRequestOptions, "signal">): Promise<VideoGenerationTaskState> {
@@ -146,6 +169,7 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
     }
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (task.provider === "jimeng933") return pollJimeng933VideoTask(requestConfig, task, options);
     return task.provider === "seedance" ? pollSeedanceTask(requestConfig, task, options) : pollOpenAIVideoTask(requestConfig, task, options);
 }
 
@@ -196,9 +220,10 @@ export async function downloadVideoGenerationTask(config: AiConfig, task: VideoG
     }
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
-    const completedState = state?.status === "completed" ? state : task.provider === "seedance" ? await pollSeedanceTask(requestConfig, task, options) : await pollOpenAIVideoTask(requestConfig, task, options);
+    const completedState = state?.status === "completed" ? state : task.provider === "jimeng933" ? await pollJimeng933VideoTask(requestConfig, task, options) : task.provider === "seedance" ? await pollSeedanceTask(requestConfig, task, options) : await pollOpenAIVideoTask(requestConfig, task, options);
     if (completedState.status !== "completed") throw new Error(completedState.status === "failed" ? completedState.error : "视频任务尚未完成");
     if (completedState.result) return completedState.result;
+    if (task.provider === "jimeng933") return downloadJimeng933VideoTask(requestConfig, task, completedState.resultUrl, options);
     if (completedState.resultUrl) return videoResultFromUrl(completedState.resultUrl, options);
     if (task.provider === "seedance") throw new Error("Seedance 任务成功但没有返回视频 URL");
     try {
@@ -220,6 +245,221 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
         }
     }
     throw new Error("视频接口没有返回可播放的视频");
+}
+
+async function createJimeng933VideoTask(config: AiConfig, model: string, input: VideoGenerationInput, options?: VideoRequestOptions): Promise<VideoGenerationTask> {
+    const normalizedModel = modelOptionName(model);
+    const duration = Number(config.videoSeconds);
+    const resolution = normalizeJimeng933Resolution(config.vquality);
+    const aspectRatio = normalizeJimeng933Ratio(config.size);
+    const validationInput = { ...input, model: normalizedModel, duration, resolution, aspectRatio };
+    const initialError = validateJimeng933VideoInput(validationInput);
+    if (initialError) throw new Error(initialError);
+    assertDistinctJimeng933References(input);
+
+    const [images, videos, audios] = await Promise.all([
+        Promise.all(input.images.map(prepareJimeng933Image)),
+        Promise.all(input.videos.map(prepareJimeng933Video)),
+        Promise.all(input.audios.map(prepareJimeng933Audio)),
+    ]);
+    const preparedInput = {
+        ...validationInput,
+        images: images.map((item) => ({ ...item.reference, type: item.type, bytes: item.blob.size, width: item.width, height: item.height })),
+        videos: videos.map((item) => ({ ...item.reference, type: item.type, bytes: item.blob.size, width: item.width, height: item.height, durationMs: item.durationMs })),
+        audios: audios.map((item) => ({ ...item.reference, type: item.type, bytes: item.blob.size, durationMs: item.durationMs })),
+    };
+    const preparedError = validateJimeng933VideoInput(preparedInput);
+    if (preparedError) throw new Error(preparedError);
+
+    const shots = input.shots?.map(({ prompt, duration: shotDuration }) => ({ prompt, duration: shotDuration }));
+    const hasReferences = images.length + videos.length + audios.length > 0;
+    const commonFields = {
+        model: normalizedModel,
+        ...(input.prompt.trim() ? { prompt: input.prompt } : {}),
+        ...(input.negativePrompt !== undefined ? { negative_prompt: input.negativePrompt } : {}),
+        duration,
+        resolution,
+        aspect_ratio: aspectRatio,
+        generate_audio: boolConfig(config.videoGenerateAudio, false),
+        ...(input.seed !== undefined ? { seed: input.seed } : {}),
+        ...(shots ? { shots } : {}),
+    };
+
+    try {
+        const response = hasReferences
+            ? await axios.post<Jimeng933TaskResponse>(aiApiUrl(config, "/videos"), buildJimeng933FormData(commonFields, input, images, videos, audios), { headers: aiHeaders(config), signal: options?.signal })
+            : await axios.post<Jimeng933TaskResponse>(aiApiUrl(config, "/videos"), commonFields, { headers: aiHeaders(config, "application/json"), signal: options?.signal });
+        const taskId = response.data.id || response.data.task_id;
+        if (!taskId) throw new Error("933 即梦接口没有返回任务 ID");
+        return { id: taskId, provider: "jimeng933", model };
+    } catch (error) {
+        throw new Error(await readJimeng933AxiosError(error, "933 即梦任务创建失败"));
+    }
+}
+
+async function pollJimeng933VideoTask(config: AiConfig, task: VideoGenerationTask, options?: Pick<VideoRequestOptions, "signal">): Promise<VideoGenerationTaskState> {
+    try {
+        const state = (await axios.get<Jimeng933TaskResponse>(aiApiUrl(config, `/videos/${encodeURIComponent(task.id)}`), { headers: aiHeaders(config), signal: options?.signal })).data;
+        const remoteStatus = normalizeRemoteStatus(state.status);
+        const progress = normalizeProgress(state.progress);
+        if (remoteStatus === "completed") return { status: "completed", remoteStatus, progress: 100, ...(state.download_url ? { resultUrl: state.download_url } : {}) };
+        if (remoteStatus === "failed") return { status: "failed", remoteStatus, progress, error: readApiErrorMessage(state.error?.message) || readApiErrorMessage(state.message) || "933 即梦视频生成失败" };
+        return { status: "pending", remoteStatus, progress };
+    } catch (error) {
+        throw new Error(await readJimeng933AxiosError(error, "933 即梦任务查询失败"));
+    }
+}
+
+async function downloadJimeng933VideoTask(config: AiConfig, task: VideoGenerationTask, downloadUrl?: string, options?: Pick<VideoRequestOptions, "signal">): Promise<VideoGenerationResult> {
+    try {
+        const url = jimeng933DownloadUrl(config, task.id, downloadUrl);
+        const response = await axios.get<Blob>(url, { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
+        await assertVideoBlob(response.data);
+        return { blob: response.data };
+    } catch (error) {
+        throw new Error(await readJimeng933AxiosError(error, "933 即梦视频下载失败"));
+    }
+}
+
+function jimeng933DownloadUrl(config: AiConfig, taskId: string, downloadUrl?: string) {
+    if (!downloadUrl) return aiApiUrl(config, `/videos/${encodeURIComponent(taskId)}/content`);
+    const baseUrl = new URL(`${config.baseUrl.trim().replace(/\/+$/, "")}/`);
+    const resolved = new URL(downloadUrl, baseUrl);
+    if (resolved.origin !== baseUrl.origin) throw new Error("933 即梦返回了不可信的跨域下载地址，已停止发送 API Key");
+    return resolved.toString();
+}
+
+type PreparedJimengImage = { reference: ReferenceImage; blob: Blob; type: string; name: string; width: number; height: number };
+type PreparedJimengVideo = { reference: ReferenceVideo; blob: Blob; type: string; name: string; width: number; height: number; durationMs: number };
+type PreparedJimengAudio = { reference: ReferenceAudio; blob: Blob; type: string; name: string; durationMs: number };
+
+async function prepareJimeng933Image(reference: ReferenceImage): Promise<PreparedJimengImage> {
+    const sourceBlob = await resolveJimeng933Blob(reference.storageKey, [reference.dataUrl, reference.url], "图片", getImageBlob);
+    const type = jimengMimeType(sourceBlob, reference.type);
+    const blob = withBlobType(sourceBlob, type);
+    const meta = await readImageBlobMeta(blob).catch(() => {
+        throw new Error(`933 即梦参考图片「${reference.name}」不是有效图片，请重新上传`);
+    });
+    return { reference, blob, type, name: jimengFileName(reference.name, type, "image"), ...meta };
+}
+
+async function prepareJimeng933Video(reference: ReferenceVideo): Promise<PreparedJimengVideo> {
+    const sourceBlob = await resolveJimeng933Blob(reference.storageKey, [reference.url], "视频", getMediaBlob);
+    const type = jimengMimeType(sourceBlob, reference.type);
+    const blob = withBlobType(sourceBlob, type);
+    const meta = await readMediaBlobMeta(blob, "video").catch(() => {
+        throw new Error(`933 即梦参考视频「${reference.name}」无法读取尺寸或时长，请重新上传`);
+    });
+    return { reference, blob, type, name: jimengFileName(reference.name, type, "video"), width: meta.width, height: meta.height, durationMs: meta.durationMs };
+}
+
+async function prepareJimeng933Audio(reference: ReferenceAudio): Promise<PreparedJimengAudio> {
+    const sourceBlob = await resolveJimeng933Blob(reference.storageKey, [reference.url], "音频", getMediaBlob);
+    const type = jimengMimeType(sourceBlob, reference.type);
+    const blob = withBlobType(sourceBlob, type);
+    const meta = await readMediaBlobMeta(blob, "audio").catch(() => {
+        throw new Error(`933 即梦参考音频「${reference.name}」无法读取时长，请重新上传`);
+    });
+    return { reference, blob, type, name: jimengFileName(reference.name, type, "audio"), durationMs: meta.durationMs };
+}
+
+function buildJimeng933FormData(fields: Record<string, unknown>, input: VideoGenerationInput, images: PreparedJimengImage[], videos: PreparedJimengVideo[], audios: PreparedJimengAudio[]) {
+    const form = new FormData();
+    Object.entries(fields).forEach(([key, value]) => {
+        if (value === undefined) return;
+        form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+    });
+    images.forEach((item) => {
+        const role = input.imageRoles?.[item.reference.id];
+        form.append(role === "first_frame" || role === "last_frame" ? role : "images", item.blob, item.name);
+    });
+    videos.forEach((item) => form.append("videos", item.blob, item.name));
+    audios.forEach((item) => form.append("audios", item.blob, item.name));
+    return form;
+}
+
+async function resolveJimeng933Blob(storageKey: string | undefined, sources: Array<string | undefined>, label: string, readStored: (key: string) => Promise<Blob | null>) {
+    if (storageKey) {
+        const stored = await readStored(storageKey);
+        if (stored) return stored;
+    }
+    for (const source of sources) {
+        if (!source) continue;
+        try {
+            const response = await fetch(source);
+            if (response.ok) return await response.blob();
+        } catch {
+            // 继续尝试其它可用来源。
+        }
+    }
+    throw new Error(`933 即梦参考${label}无法读取真实文件，请重新上传本地文件`);
+}
+
+function assertDistinctJimeng933References(input: VideoGenerationInput) {
+    const seen = new Set<string>();
+    for (const reference of [...input.images, ...input.videos, ...input.audios]) {
+        const key = reference.storageKey || ("dataUrl" in reference ? reference.dataUrl : reference.url);
+        if (!key) continue;
+        if (seen.has(key)) throw new Error("933 即梦不支持重复提交同一个参考素材");
+        seen.add(key);
+    }
+}
+
+function jimengFileName(name: string, type: string, fallbackPrefix: "image" | "video" | "audio") {
+    const safeName = name.replace(/[\\/\0]/g, "_").trim();
+    const extension = type.includes("png") ? "png" : type.includes("webp") ? "webp" : type.includes("jpeg") ? "jpg" : type.includes("quicktime") ? "mov" : type.includes("wav") ? "wav" : type.includes("audio") ? "mp3" : "mp4";
+    const baseName = safeName.replace(/\.[a-z0-9]{2,5}$/i, "") || fallbackPrefix;
+    return `${baseName}.${extension}`;
+}
+
+function jimengMimeType(blob: Blob, declaredType: string) {
+    return !blob.type || blob.type === "application/octet-stream" ? declaredType : blob.type;
+}
+
+function withBlobType(blob: Blob, type: string) {
+    return blob.type === type ? blob : new Blob([blob], { type });
+}
+
+function readImageBlobMeta(blob: Blob) {
+    return new Promise<{ width: number; height: number }>((resolve, reject) => {
+        const url = URL.createObjectURL(blob);
+        const image = new Image();
+        const cleanup = () => URL.revokeObjectURL(url);
+        image.onload = () => {
+            const result = { width: image.naturalWidth, height: image.naturalHeight };
+            cleanup();
+            result.width && result.height ? resolve(result) : reject(new Error("invalid image"));
+        };
+        image.onerror = () => {
+            cleanup();
+            reject(new Error("invalid image"));
+        };
+        image.src = url;
+    });
+}
+
+function readMediaBlobMeta(blob: Blob, kind: "video" | "audio") {
+    return new Promise<{ width: number; height: number; durationMs: number }>((resolve, reject) => {
+        const url = URL.createObjectURL(blob);
+        const media = document.createElement(kind);
+        const cleanup = () => {
+            media.removeAttribute("src");
+            media.load();
+            URL.revokeObjectURL(url);
+        };
+        media.onloadedmetadata = () => {
+            const video = kind === "video" ? (media as HTMLVideoElement) : null;
+            const result = { width: video?.videoWidth || 0, height: video?.videoHeight || 0, durationMs: Number.isFinite(media.duration) ? Math.round(media.duration * 1000) : 0 };
+            cleanup();
+            result.durationMs && (kind === "audio" || (result.width && result.height)) ? resolve(result) : reject(new Error("invalid media"));
+        };
+        media.onerror = () => {
+            cleanup();
+            reject(new Error("invalid media"));
+        };
+        media.preload = "metadata";
+        media.src = url;
+    });
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: VideoRequestOptions): Promise<VideoGenerationTask> {
@@ -536,6 +776,42 @@ function readAxiosError(error: unknown, fallback: string) {
     return error instanceof Error ? readApiErrorMessage(error.message) || error.message : fallback;
 }
 
+async function readJimeng933AxiosError(error: unknown, fallback: string) {
+    if (axios.isCancel(error)) return "请求已取消";
+    if (axios.isAxiosError(error)) {
+        const responseData = error.response?.data;
+        const raw = responseData instanceof Blob ? readJimeng933ErrorMessage(await responseData.text()) : readJimeng933ErrorMessage(responseData);
+        return raw || jimeng933StatusMessage(error.response?.status, fallback);
+    }
+    if (error instanceof DOMException && error.name === "AbortError") return "请求已取消";
+    return error instanceof Error ? readApiErrorMessage(error.message) || error.message : fallback;
+}
+
+function readJimeng933ErrorMessage(value: unknown): string {
+    if (typeof value === "string") {
+        try {
+            return readJimeng933ErrorMessage(JSON.parse(value)) || value;
+        } catch {
+            return readApiErrorMessage(value);
+        }
+    }
+    if (!value || typeof value !== "object") return "";
+    const payload = value as { error?: unknown; message?: unknown; msg?: unknown; detail?: unknown };
+    return readApiErrorMessage(payload.error) || readApiErrorMessage(payload.message) || readApiErrorMessage(payload.msg) || readApiErrorMessage(payload.detail);
+}
+
+function jimeng933StatusMessage(status: number | undefined, fallback: string) {
+    if (status === 400) return `${fallback}：模型、时长、分辨率、比例、分镜或文本参数无效`;
+    if (status === 401) return "GPTCH API Key 无效或缺失";
+    if (status === 402 || status === 403) return "GPTCH 余额不足或没有模型权限";
+    if (status === 413) return "933 即梦请求体、文件大小或素材数量超限";
+    if (status === 415) return "933 即梦请求 Content-Type 不受支持";
+    if (status === 422) return "933 即梦素材内容、尺寸、时长或组合无效";
+    if (status === 429) return "933 即梦请求过快或当前没有可用容量，请稍后重试";
+    if (status === 500 || status === 502 || status === 503 || status === 504) return "GPTCH 或上游服务暂时异常，请稍后查询已有任务";
+    return status ? `${fallback}（${status}）` : fallback;
+}
+
 function statusMessage(status: number | undefined, fallback: string) {
     if (status === 401 || status === 403) return "鉴权失败，请检查 API Key、套餐权限或模型权限";
     if (status === 429) return "请求被限流或额度不足，请稍后重试";
@@ -543,15 +819,19 @@ function statusMessage(status: number | undefined, fallback: string) {
 }
 
 async function assertVideoBlob(blob: Blob) {
-    if (!blob.type.includes("json")) return;
-    let payload: { code?: number; msg?: string; error?: { message?: string } };
+    if (blob.type.startsWith("video/")) return;
+    let payload: { code?: number; msg?: string; message?: string; error?: { message?: string } };
     try {
-        payload = JSON.parse(await blob.text()) as { code?: number; msg?: string; error?: { message?: string } };
+        const text = await blob.slice(0, 65_536).text();
+        if (!blob.type.includes("json") && !/^\s*[\[{]/.test(text)) return;
+        payload = JSON.parse(text) as { code?: number; msg?: string; message?: string; error?: { message?: string } };
     } catch {
         return;
     }
     if (typeof payload.code === "number" && payload.code !== 0) throw new Error(readApiErrorMessage(payload) || "视频下载失败");
     if (payload.error?.message) throw new Error(readApiErrorMessage(payload.error.message) || payload.error.message);
+    if (payload.message || payload.msg) throw new Error(readApiErrorMessage(payload) || "视频下载失败");
+    throw new Error("视频下载接口返回了 JSON，而不是视频文件");
 }
 
 function isPublicMediaUrl(value: string) {

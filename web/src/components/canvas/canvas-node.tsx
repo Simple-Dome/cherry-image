@@ -8,12 +8,15 @@ import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
-import { CanvasNodeType, type CanvasNodeData, type Position } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@/types/canvas";
+import { CanvasStoryboardNode } from "./canvas-storyboard-node";
 import type { CanvasNodeContext, CanvasPluginHost } from "@/types/canvas-plugin";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const selectionBlue = "#2f80ff";
+
+export type CanvasFrameRoleVisual = { first: boolean; last: boolean; firstConflict?: boolean; lastConflict?: boolean };
 
 type CanvasNodeProps = {
     data: CanvasNodeData;
@@ -31,6 +34,7 @@ type CanvasNodeProps = {
     registryVersion?: number;
     renderPanel?: (node: CanvasNodeData) => ReactNode;
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
+    frameRoleVisual?: CanvasFrameRoleVisual;
     batchCount?: number;
     groupChildCount?: number;
     isGroupDropTarget?: boolean;
@@ -46,6 +50,7 @@ type CanvasNodeProps = {
     onConnectStart: (event: React.MouseEvent, nodeId: string, handleType: "source" | "target") => void;
     onResize: (nodeId: string, width: number, height: number, position?: Position) => void;
     onContentChange: (nodeId: string, content: string) => void;
+    onMetadataChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onTitleChange: (nodeId: string, title: string) => void;
     onToggleBatch?: (nodeId: string) => void;
     onSetBatchPrimary?: (node: CanvasNodeData) => void;
@@ -72,6 +77,7 @@ type NodeContentRendererProps = {
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
     pluginContext?: CanvasNodeContext | null;
     onContentChange: (nodeId: string, content: string) => void;
+    onMetadataChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onStopEditing: () => void;
     mentionReferences: CanvasResourceReference[];
     onRetry?: (node: CanvasNodeData) => void;
@@ -100,6 +106,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     pluginHost,
     renderPanel,
     renderNodeContent,
+    frameRoleVisual,
     batchCount = 0,
     groupChildCount = 0,
     isGroupDropTarget = false,
@@ -115,6 +122,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onConnectStart,
     onResize,
     onContentChange,
+    onMetadataChange,
     onTitleChange,
     onToggleBatch,
     onSetBatchPrimary,
@@ -416,6 +424,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         pluginContext={pluginContext}
                         mentionReferences={mentionReferences}
                         onContentChange={onContentChange}
+                        onMetadataChange={onMetadataChange}
                         onStopEditing={() => setIsEditingContent(false)}
                         onRetry={onRetry}
                         onQueryRemoteVideo={onQueryRemoteVideo}
@@ -438,6 +447,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 <ResizeHandle corner="bottom-left" onMouseDown={handleResizeMouseDown} />
                 <ResizeHandle corner="bottom-right" onMouseDown={handleResizeMouseDown} />
             </div>
+
+            {data.type === CanvasNodeType.Image && frameRoleVisual ? <FrameRoleMarkers visual={frameRoleVisual} theme={theme} /> : null}
 
             {!isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
             {!isGroup ? <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config && (hovered || isSelected || isConnecting)} onMouseDown={(event) => onConnectStart(event, data.id, "source")} /> : null}
@@ -525,9 +536,25 @@ const nodeContentRenderers = {
     [CanvasNodeType.Image]: ImageNodeContent,
     [CanvasNodeType.Config]: EmptyImageContent,
     [CanvasNodeType.Video]: VideoNodeContent,
+    [CanvasNodeType.Storyboard]: StoryboardNodeContent,
     [CanvasNodeType.Audio]: AudioNodeContent,
     [CanvasNodeType.Group]: GroupNodeContent,
 } satisfies Record<CanvasNodeType, (props: NodeContentRendererProps) => ReactNode>;
+
+function StoryboardNodeContent({ node, theme, onMetadataChange }: NodeContentRendererProps) {
+    return <CanvasStoryboardNode node={node} theme={theme} onChange={onMetadataChange} />;
+}
+
+function FrameRoleMarkers({ visual, theme }: { visual: CanvasFrameRoleVisual; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    const firstColor = visual.firstConflict ? theme.frame.conflict : theme.frame.first;
+    const lastColor = visual.lastConflict ? theme.frame.conflict : theme.frame.last;
+    return (
+        <div className="pointer-events-none absolute inset-0 z-[60] overflow-hidden rounded-3xl">
+            {visual.first ? <><div className="absolute inset-y-3 left-0 w-1 rounded-r-full" style={{ background: firstColor }} /><span className="absolute left-3 top-3 rounded-md px-2 py-1 text-[11px] font-semibold text-white" style={{ background: firstColor }}>首帧</span></> : null}
+            {visual.last ? <><div className="absolute inset-y-3 right-0 w-1 rounded-l-full" style={{ background: lastColor }} /><span className="absolute right-3 top-3 rounded-md px-2 py-1 text-[11px] font-semibold text-white" style={{ background: lastColor }}>尾帧</span></> : null}
+        </div>
+    );
+}
 
 function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererProps) {
     return (

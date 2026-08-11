@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { App, Modal, Segmented, Tooltip } from "antd";
-import { Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Video } from "lucide-react";
+import { App, Modal, Popover, Segmented, Tooltip } from "antd";
+import { Clapperboard, Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasVideoFrameRole, type ViewportTransform } from "@/types/canvas";
 import type { CanvasNodeToolbarItem } from "@/types/canvas-plugin";
 import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
@@ -37,7 +37,11 @@ type CanvasNodeHoverToolbarProps = {
     onToggleFreeResize: (node: CanvasNodeData) => void;
     onDelete: (node: CanvasNodeData) => void;
     extraTools?: CanvasNodeToolbarItem[];
+    frameTargets?: CanvasFrameTarget[];
+    onFrameRoleChange?: (connectionId: string, role?: CanvasVideoFrameRole) => void;
 };
+
+export type CanvasFrameTarget = { connectionId: string; targetTitle: string; role?: CanvasVideoFrameRole; supported: boolean };
 
 type ToolbarTool = {
     id: string;
@@ -75,6 +79,8 @@ export function CanvasNodeHoverToolbar({
     onToggleFreeResize,
     onDelete,
     extraTools = [],
+    frameTargets = [],
+    onFrameRoleChange,
 }: CanvasNodeHoverToolbarProps) {
     const [quickImageToolIds, setQuickImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
     const [showImageToolLabels, setShowImageToolLabels] = useState(true);
@@ -193,6 +199,7 @@ export function CanvasNodeHoverToolbar({
                 {toolbarTools.map((tool) => (
                     <ToolbarAction key={tool.id} {...tool} showLabel={showImageToolLabels} />
                 ))}
+                {hasImage && frameTargets.length > 0 && onFrameRoleChange ? <FrameRolePopover targets={frameTargets} onChange={onFrameRoleChange} onOpen={() => onKeep(node.id)} /> : null}
                 {hasImage ? <ToolbarAction id="more" title="配置快捷工具" label="更多" icon={<Ellipsis className="size-4" />} active={imageToolSettingsOpen} onClick={openImageToolSettings} showLabel={showImageToolLabels} /> : null}
             </div>
             {hasImage ? (
@@ -208,6 +215,46 @@ export function CanvasNodeHoverToolbar({
                 />
             ) : null}
         </>
+    );
+}
+
+function FrameRolePopover({ targets, onChange, onOpen }: { targets: CanvasFrameTarget[]; onChange: (connectionId: string, role?: CanvasVideoFrameRole) => void; onOpen: () => void }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    return (
+        <Popover
+            trigger="click"
+            placement="top"
+            onOpenChange={(open) => open && onOpen()}
+            content={
+                <div className="w-[330px] space-y-2" onMouseDown={(event) => event.stopPropagation()}>
+                    <div className="px-1 text-xs" style={{ color: theme.node.muted }}>为每个视频目标设置图片用途</div>
+                    {targets.map((target) => (
+                        <div key={target.connectionId} className="border-t px-1 pt-2" style={{ borderColor: theme.node.stroke }}>
+                            <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
+                                <span className="truncate font-medium">{target.targetTitle}</span>
+                                {!target.supported ? <span style={{ color: theme.node.faint }}>当前渠道不生效</span> : null}
+                            </div>
+                            <div className="grid grid-cols-3 gap-1">
+                                {([
+                                    [undefined, "参考图"],
+                                    ["first_frame", "首帧"],
+                                    ["last_frame", "尾帧"],
+                                ] as const).map(([role, label]) => {
+                                    const active = target.role === role || (!target.role && role === undefined);
+                                    const color = role === "first_frame" ? theme.frame.first : role === "last_frame" ? theme.frame.last : theme.node.muted;
+                                    return <button key={label} type="button" className="h-8 rounded-md border text-xs transition hover:opacity-80" style={{ borderColor: active ? color : theme.node.stroke, color, background: active ? `${color}18` : "transparent" }} onClick={() => onChange(target.connectionId, role)}>{label}</button>;
+                                })}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            }
+        >
+            <button type="button" className="flex h-full items-center gap-2 px-3 transition hover:bg-black/5" title="设置首帧或尾帧">
+                <Clapperboard className="size-4" />
+                <span className="whitespace-nowrap text-[15px]">帧角色</span>
+            </button>
+        </Popover>
     );
 }
 
@@ -257,7 +304,7 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
                         <div className="thin-scrollbar h-full space-y-3 overflow-auto pr-1">
                             <InfoRow label="ID" value={node.id} />
                             <InfoRow label="名称" value={node.title || "未命名节点"} />
-                            <InfoRow label="类型" value={node.type === CanvasNodeType.Text ? "文本" : node.type === CanvasNodeType.Image ? "图片" : node.type === CanvasNodeType.Video ? "视频" : node.type === CanvasNodeType.Audio ? "音频" : node.type === CanvasNodeType.Group ? "组" : "生成配置"} />
+                            <InfoRow label="类型" value={node.type === CanvasNodeType.Text ? "文本" : node.type === CanvasNodeType.Image ? "图片" : node.type === CanvasNodeType.Video ? "视频" : node.type === CanvasNodeType.Storyboard ? "分镜" : node.type === CanvasNodeType.Audio ? "音频" : node.type === CanvasNodeType.Group ? "组" : "生成配置"} />
                             <InfoRow label="尺寸" value={`${Math.round(node.width)} x ${Math.round(node.height)}`} />
                             <InfoRow label="位置" value={`${Math.round(node.position.x)}, ${Math.round(node.position.y)}`} />
                             <InfoRow label="状态" value={node.metadata?.status || "idle"} />

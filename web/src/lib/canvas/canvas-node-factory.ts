@@ -20,8 +20,18 @@ export function createCanvasNode(type: CanvasNodeTypeId, position: Position, met
         },
         width: spec.width,
         height: spec.height,
-        metadata: { ...spec.metadata, ...metadata },
+        metadata: {
+            ...spec.metadata,
+            ...(type === CanvasNodeType.Storyboard
+                ? { storyboardShots: [createStoryboardShot(1), createStoryboardShot(2)], storyboardOrderMode: "list" as const }
+                : {}),
+            ...metadata,
+        },
     };
+}
+
+function createStoryboardShot(index: number) {
+    return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, prompt: "", duration: 3, order: index };
 }
 
 export function imageMetadata(image: UploadedImage): CanvasNodeMetadata {

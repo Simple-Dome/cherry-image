@@ -30,11 +30,11 @@ import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/can
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/components/canvas/canvas-node-upscale-dialog";
-import { buildNodeGenerationContext, buildNodeGenerationInputs, buildNodeResponseMessages, hydrateNodeGenerationContext, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
-import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
+import { buildNodeGenerationContext, buildNodeGenerationInputs, buildNodeResponseMessages, hydrateNodeGenerationContext, type NodeGenerationContext, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
+import { CanvasNodeHoverToolbar, CanvasNodeInfoModal, type CanvasFrameTarget } from "@/components/canvas/canvas-node-hover-toolbar";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
-import { CanvasNode } from "@/components/canvas/canvas-node";
+import { CanvasNode, type CanvasFrameRoleVisual } from "@/components/canvas/canvas-node";
 import { CanvasNodePromptPanel, type CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
@@ -89,6 +89,7 @@ import {
 } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio } from "@/types/media";
+import { isJimeng933VideoConfig } from "@/lib/jimeng933-video";
 
 // 内置节点注册到统一注册表(模块加载时执行一次)
 registerBuiltinNodes();
@@ -550,6 +551,10 @@ function InfiniteCanvasPage() {
                 return;
             }
             const { fromNodeId, toNodeId } = connection;
+            if (nodesRef.current.find((node) => node.id === fromNodeId)?.type === CanvasNodeType.Storyboard && connectionsRef.current.some((item) => item.toNodeId === toNodeId && nodesRef.current.find((node) => node.id === item.fromNodeId)?.type === CanvasNodeType.Storyboard)) {
+                message.warning("一个视频任务只能连接一个分镜节点");
+                return;
+            }
             const exists = connectionsRef.current.some((conn) => conn.fromNodeId === fromNodeId && conn.toNodeId === toNodeId);
             if (!exists) {
                 setConnections((prev) => [...prev, { id: `conn-${Date.now()}`, fromNodeId, toNodeId }]);
@@ -560,7 +565,7 @@ function InfiniteCanvasPage() {
     );
 
     const createConnectedNode = useCallback(
-        (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio, pending: PendingConnectionCreate) => {
+        (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Storyboard | CanvasNodeType.Audio, pending: PendingConnectionCreate) => {
             const metadata = type === CanvasNodeType.Config ? { model: effectiveConfig.imageModel || effectiveConfig.model, size: resolveCanvasImageRequestSize(effectiveConfig.size, effectiveConfig.quality), quality: CANVAS_IMAGE_QUALITY, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count) } : undefined;
             const newNode = createCanvasNode(type, pending.position, metadata);
             const connection = normalizeConnection(pending.connection.nodeId, newNode.id, [...nodesRef.current, newNode], pending.connection.handleType);
@@ -572,7 +577,7 @@ function InfiniteCanvasPage() {
             setConnections((prev) => [...prev, { id: nanoid(), ...connection }]);
             setSelectedNodeIds(new Set([newNode.id]));
             setSelectedConnectionId(null);
-            if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio) setDialogNodeId(newNode.id);
+            if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Storyboard) setDialogNodeId(newNode.id);
             setPendingConnectionCreate(null);
             setConnecting(null);
         },
@@ -635,6 +640,42 @@ function InfiniteCanvasPage() {
     }, [collapsingBatchIds, nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
     const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+    const { frameTargetsByImageId, frameVisualByImageId } = useMemo(() => {
+        const targets = new Map<string, CanvasFrameTarget[]>();
+        const visuals = new Map<string, CanvasFrameRoleVisual>();
+        const roleCounts = new Map<string, { first: number; last: number }>();
+
+        connections.forEach((connection) => {
+            const source = nodeById.get(connection.fromNodeId);
+            const target = nodeById.get(connection.toNodeId);
+            if (source?.type !== CanvasNodeType.Image || !target) return;
+            const isVideoTarget = target.type === CanvasNodeType.Video || (target.type === CanvasNodeType.Config && target.metadata?.generationMode === "video");
+            if (!isVideoTarget) return;
+            const counts = roleCounts.get(target.id) || { first: 0, last: 0 };
+            if (connection.targetRole === "first_frame") counts.first += 1;
+            if (connection.targetRole === "last_frame") counts.last += 1;
+            roleCounts.set(target.id, counts);
+            const config = buildGenerationConfig(effectiveConfig, target, "video");
+            const list = targets.get(source.id) || [];
+            list.push({ connectionId: connection.id, targetTitle: target.title || "视频", role: connection.targetRole, supported: isJimeng933VideoConfig(config) });
+            targets.set(source.id, list);
+        });
+
+        connections.forEach((connection) => {
+            if (!connection.targetRole) return;
+            const counts = roleCounts.get(connection.toNodeId);
+            const current = visuals.get(connection.fromNodeId) || { first: false, last: false };
+            if (connection.targetRole === "first_frame") {
+                current.first = true;
+                current.firstConflict = Boolean(current.firstConflict || (counts?.first || 0) > 1);
+            } else {
+                current.last = true;
+                current.lastConflict = Boolean(current.lastConflict || (counts?.last || 0) > 1);
+            }
+            visuals.set(connection.fromNodeId, current);
+        });
+        return { frameTargetsByImageId: targets, frameVisualByImageId: visuals };
+    }, [connections, effectiveConfig, nodeById]);
     // 工具条跟随「单选节点」:点击/新建/框选/键盘选中任一节点都会显示,不再仅靠精确点中触发。
     // 多选时不显示;拖拽中由下方 isNodeDragging 守卫隐藏。
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
@@ -702,6 +743,15 @@ function InfiniteCanvasPage() {
         });
         return map;
     }, [connections, nodes]);
+    const videoStructureByNodeId = useMemo(() => {
+        const map = new Map<string, ReturnType<typeof buildNodeGenerationContext>>();
+        nodes.forEach((node) => {
+            if (node.type === CanvasNodeType.Video || (node.type === CanvasNodeType.Config && node.metadata?.generationMode === "video")) {
+                map.set(node.id, buildNodeGenerationContext(node.id, nodes, connections, node.metadata?.composerContent ?? node.metadata?.prompt ?? ""));
+            }
+        });
+        return map;
+    }, [connections, nodes]);
     const mentionReferencesByNodeId = useMemo(() => {
         const map = new Map<string, ReturnType<typeof buildNodeMentionReferences>>();
         nodes.forEach((node) => map.set(node.id, buildNodeMentionReferences(node, nodes, connections)));
@@ -766,7 +816,7 @@ function InfiniteCanvasPage() {
                   ? Boolean(definition.autoOpenPanel)
                   : definition?.useBuiltinPanel
                     ? true
-                    : isBuiltinType(type) && type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Group;
+                    : isBuiltinType(type) && type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Storyboard && type !== CanvasNodeType.Group;
             if (wantsPanel) setDialogNodeId(newNode.id);
         },
         [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.quality, effectiveConfig.size, getCanvasCenter],
@@ -1645,6 +1695,10 @@ function InfiniteCanvasPage() {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
     }, []);
 
+    const handleFrameRoleChange = useCallback((connectionId: string, role?: "first_frame" | "last_frame") => {
+        setConnections((prev) => prev.map((connection) => (connection.id === connectionId ? { ...connection, targetRole: role } : connection)));
+    }, []);
+
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
         saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
@@ -2186,6 +2240,15 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
                 return;
             }
+            if (mode === "video") {
+                const structureError = validateCanvasVideoStructure(generationContext, isJimeng933VideoConfig(generationConfig), Number(generationConfig.videoSeconds));
+                if (structureError) {
+                    message.error(structureError);
+                    finishGenerationRequest(nodeId, runController);
+                    setRunningNodeId(null);
+                    return;
+                }
+            }
             const markSourceStatus = sourceNode?.type !== CanvasNodeType.Image && !editingTextNode;
             if (!effectivePrompt && (mode === "text" || mode === "audio")) {
                 finishGenerationRequest(nodeId, runController);
@@ -2374,7 +2437,7 @@ function InfiniteCanvasPage() {
                     const videoNode: CanvasNodeData = {
                         id: videoId,
                         type: CanvasNodeType.Video,
-                        title: effectivePrompt.slice(0, 32) || "Generated Video",
+                        title: effectivePrompt.slice(0, 32) || "分镜视频",
                         position: isEmptyVideoNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
                         width: isEmptyVideoNode ? sourceNode.width : spec.width,
                         height: isEmptyVideoNode ? sourceNode.height : spec.height,
@@ -2401,7 +2464,7 @@ function InfiniteCanvasPage() {
                     try {
                         let result: VideoGenerationResult;
                         try {
-                            result = await requestVideoGeneration(generationConfig, effectivePrompt, generationContext.referenceImages, generationContext.referenceVideos, generationContext.referenceAudios, {
+                            result = await requestVideoGeneration(generationConfig, { prompt: effectivePrompt, images: generationContext.referenceImages, videos: generationContext.referenceVideos, audios: generationContext.referenceAudios, imageRoles: generationContext.imageRoles, shots: generationContext.shots }, {
                                 signal: controller.signal,
                                 onReferenceImagesOptimized: (count) => {
                                     message.info(`已自动优化 ${count} 张视频参考图：转为 JPEG，长边压缩至 ${VIDEO_REFERENCE_IMAGE_MAX_EDGE}px 内，以提高视频生成成功率。`);
@@ -2592,7 +2655,7 @@ function InfiniteCanvasPage() {
 
             const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
             const prompt = (savedImageMetadata?.prompt || context?.prompt || "").trim();
-            if (!prompt) {
+            if (!prompt && !(node.type === CanvasNodeType.Video && context?.shots?.length)) {
                 message.warning("找不到提示词，无法重试");
                 return;
             }
@@ -2628,9 +2691,12 @@ function InfiniteCanvasPage() {
                     return;
                 }
                 if (node.type === CanvasNodeType.Video) {
+                    if (!context) return;
+                    const structureError = validateCanvasVideoStructure(context, isJimeng933VideoConfig(generationConfig), Number(generationConfig.videoSeconds));
+                    if (structureError) throw new Error(structureError);
                     let result: VideoGenerationResult;
                     try {
-                        result = await requestVideoGeneration(generationConfig, prompt, retryImages, context?.referenceVideos || [], context?.referenceAudios || [], {
+                        result = await requestVideoGeneration(generationConfig, { prompt, images: retryImages, videos: context.referenceVideos, audios: context.referenceAudios, imageRoles: context.imageRoles, shots: context.shots }, {
                             signal: controller.signal,
                             onTaskCreated: (task) => persistRemoteVideoTask(node.id, task),
                             onTaskStateChange: (state) => {
@@ -2868,6 +2934,7 @@ function InfiniteCanvasPage() {
                     node={panelNode}
                     isRunning={runningNodeId === panelNode.id}
                     mentionReferences={mentionReferencesByNodeId.get(panelNode.id) || EMPTY_REFERENCES}
+                    videoStructure={videoStructureByNodeId.get(panelNode.id)}
                     onPromptChange={handleNodePromptChange}
                     onConfigChange={handleConfigNodeChange}
                     onGenerate={handleGenerateNode}
@@ -2879,7 +2946,7 @@ function InfiniteCanvasPage() {
                     }}
                 />
             ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, renderPluginPanel, runningNodeId],
+        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, renderPluginPanel, runningNodeId, videoStructureByNodeId],
     );
 
     const renderNodeContentPanel = useCallback(
@@ -2888,6 +2955,7 @@ function InfiniteCanvasPage() {
                 node={contentNode}
                 isRunning={runningNodeId === contentNode.id}
                 inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
+                videoStructure={videoStructureByNodeId.get(contentNode.id)}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
                 onStop={confirmStopGeneration}
@@ -2897,7 +2965,7 @@ function InfiniteCanvasPage() {
                 }}
             />
         ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId],
+        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId, videoStructureByNodeId],
     );
 
     if (!projectLoaded) return <CanvasRefreshShell />;
@@ -3008,6 +3076,7 @@ function InfiniteCanvasPage() {
                             registryVersion={nodeRegistryVersion}
                             renderPanel={renderNodePanel}
                             renderNodeContent={renderNodeContentPanel}
+                            frameRoleVisual={frameVisualByImageId.get(node.id)}
                             onMouseDown={handleNodeMouseDown}
                             onSelectCapture={handleNodeSelectCapture}
                             onHoverStart={handleNodeHoverStart}
@@ -3015,6 +3084,7 @@ function InfiniteCanvasPage() {
                             onConnectStart={handleConnectStart}
                             onResize={handleNodeResize}
                             onContentChange={handleNodeContentChange}
+                            onMetadataChange={handleConfigNodeChange}
                             onTitleChange={handleNodeTitleChange}
                             onToggleBatch={toggleBatchExpanded}
                             onSetBatchPrimary={setBatchPrimary}
@@ -3059,6 +3129,8 @@ function InfiniteCanvasPage() {
                     node={isNodeDragging || nodeImageSettingsOpen ? null : toolbarNode}
                     viewport={viewport}
                     extraTools={toolbarNode ? buildNodeToolbarItems(toolbarNode) : undefined}
+                    frameTargets={toolbarNode ? frameTargetsByImageId.get(toolbarNode.id) : undefined}
+                    onFrameRoleChange={handleFrameRoleChange}
                     onKeep={keepNodeToolbar}
                     onLeave={hideNodeToolbar}
                     onInfo={(node) => setInfoNodeId(node.id)}
@@ -3091,6 +3163,7 @@ function InfiniteCanvasPage() {
                     showImageInfo={showImageInfo}
                     onAddImage={() => createNode(CanvasNodeType.Image)}
                     onAddVideo={() => createNode(CanvasNodeType.Video)}
+                    onAddStoryboard={() => createNode(CanvasNodeType.Storyboard)}
                     onAddAudio={() => createNode(CanvasNodeType.Audio)}
                     onAddText={() => createNode(CanvasNodeType.Text)}
                     onAddConfig={() => createNode(CanvasNodeType.Config)}
@@ -3343,6 +3416,27 @@ function mediaFileAccept(kind?: CanvasMediaKind) {
 
 function mediaKindLabel(kind: CanvasMediaKind) {
     return kind === "image" ? "图片" : kind === "video" ? "视频" : "音频";
+}
+
+function validateCanvasVideoStructure(context: NodeGenerationContext, isJimeng933: boolean, duration: number) {
+    if (context.storyboardError) return context.storyboardError;
+    if (context.shots && !isJimeng933) return "当前视频渠道不支持结构化分镜，请切换到 933 即梦渠道";
+    if (!isJimeng933) return null;
+
+    const roleEntries = Object.entries(context.imageRoles);
+    const firstFrames = roleEntries.filter(([, role]) => role === "first_frame").map(([id]) => context.imageRoleTitles[id] || id);
+    const lastFrames = roleEntries.filter(([, role]) => role === "last_frame").map(([id]) => context.imageRoleTitles[id] || id);
+    if (firstFrames.length > 1) return `检测到多个首帧：${firstFrames.join("、")}。每个视频只能设置一个首帧`;
+    if (lastFrames.length > 1) return `检测到多个尾帧：${lastFrames.join("、")}。每个视频只能设置一个尾帧`;
+    if (context.shots) {
+        if (context.shots.length < 2 || context.shots.length > 15) return "分镜数量必须为 2–15 个";
+        const emptyIndex = context.shots.findIndex((shot) => !shot.prompt.trim());
+        if (emptyIndex >= 0) return `分镜 ${emptyIndex + 1} 的提示词不能为空`;
+        const invalidDurationIndex = context.shots.findIndex((shot) => !Number.isInteger(shot.duration) || shot.duration <= 0);
+        if (invalidDurationIndex >= 0) return `分镜 ${invalidDurationIndex + 1} 的时长必须是正整数`;
+        if (context.storyboardDuration !== duration) return `分镜总时长为 ${context.storyboardDuration} 秒，需要与视频时长 ${duration} 秒一致`;
+    }
+    return null;
 }
 
 function createCanvasRemoteVideoTask(task: VideoGenerationTask): CanvasRemoteVideoTask {

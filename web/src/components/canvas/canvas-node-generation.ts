@@ -4,7 +4,8 @@ import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
-import { getGenerationResourceNodes } from "@/lib/canvas/canvas-resource-references";
+import { getGenerationInputConnections, getGenerationResourceNodes } from "@/lib/canvas/canvas-resource-references";
+import type { VideoImageRole, VideoShot } from "@/lib/jimeng933-video";
 
 export type NodeGenerationContext = {
     prompt: string;
@@ -15,6 +16,12 @@ export type NodeGenerationContext = {
     imageCount: number;
     videoCount: number;
     audioCount: number;
+    imageRoles: Record<string, VideoImageRole>;
+    imageRoleTitles: Record<string, string>;
+    shots?: VideoShot[];
+    storyboardCount: number;
+    storyboardDuration: number;
+    storyboardError?: string;
 };
 
 export type NodeGenerationInput = {
@@ -31,7 +38,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const inputs = buildNodeGenerationInputs(nodeId, nodes, connections);
     const sourceNode = nodes.find((node) => node.id === nodeId);
     if (sourceNode?.type === CanvasNodeType.Config && Boolean(sourceNode.metadata?.composerContent?.trim())) {
-        return buildComposerGenerationContext(inputs, prompt);
+        return attachVideoStructure(buildComposerGenerationContext(inputs, prompt), nodeId, nodes, connections);
     }
 
     const upstreamText = inputs
@@ -42,7 +49,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const referenceVideos = inputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
     const referenceAudios = inputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
 
-    return {
+    return attachVideoStructure({
         prompt: upstreamText ? `${prompt}\n\n${upstreamText}` : prompt,
         referenceImages,
         referenceVideos,
@@ -51,7 +58,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         imageCount: referenceImages.length,
         videoCount: referenceVideos.length,
         audioCount: referenceAudios.length,
-    };
+    }, nodeId, nodes, connections);
 }
 
 function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: string): NodeGenerationContext {
@@ -98,6 +105,10 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
             imageCount: 0,
             videoCount: 0,
             audioCount: 0,
+            imageRoles: {},
+            imageRoleTitles: {},
+            storyboardCount: 0,
+            storyboardDuration: 0,
         };
     }
 
@@ -110,6 +121,50 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
         imageCount: referenceImages.length,
         videoCount: referenceVideos.length,
         audioCount: referenceAudios.length,
+        imageRoles: {},
+        imageRoleTitles: {},
+        storyboardCount: 0,
+        storyboardDuration: 0,
+    };
+}
+
+function attachVideoStructure(context: NodeGenerationContext, nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]): NodeGenerationContext {
+    const inputConnections = getGenerationInputConnections(nodeId, nodes, connections);
+    const selectedImageIds = new Set(context.referenceImages.map((image) => image.id));
+    const imageRoles: Record<string, VideoImageRole> = {};
+    const imageRoleTitles: Record<string, string> = {};
+    inputConnections.forEach((connection) => {
+        if (!connection.targetRole || !selectedImageIds.has(connection.fromNodeId)) return;
+        imageRoles[connection.fromNodeId] = connection.targetRole;
+        imageRoleTitles[connection.fromNodeId] = nodes.find((node) => node.id === connection.fromNodeId)?.title || connection.fromNodeId;
+    });
+
+    const storyboardNodes = inputConnections
+        .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))
+        .filter((node): node is CanvasNodeData => node?.type === CanvasNodeType.Storyboard);
+    const storyboard = storyboardNodes[0];
+    const rawShots = storyboard?.metadata?.storyboardShots || [];
+    let storyboardError: string | undefined;
+    let shots: VideoShot[] | undefined;
+    if (storyboardNodes.length > 1) storyboardError = "一个视频任务只能连接一个分镜节点";
+    if (storyboard) {
+        if (storyboard.metadata?.storyboardOrderMode === "custom") {
+            const orders = rawShots.map((shot) => shot.order);
+            if (orders.some((order) => !Number.isInteger(order) || Number(order) <= 0)) storyboardError = "指定序号时，每个分镜都必须填写正整数序号";
+            else if (new Set(orders).size !== orders.length) storyboardError = "分镜序号不能重复";
+        }
+        shots = [...rawShots]
+            .sort((a, b) => storyboard.metadata?.storyboardOrderMode === "custom" ? (a.order || 0) - (b.order || 0) : 0)
+            .map(({ id, prompt: shotPrompt, duration }) => ({ id, prompt: shotPrompt, duration: Number(duration) }));
+    }
+    return {
+        ...context,
+        imageRoles,
+        imageRoleTitles,
+        shots,
+        storyboardCount: storyboardNodes.length,
+        storyboardDuration: rawShots.reduce((total, shot) => total + (Number(shot.duration) || 0), 0),
+        storyboardError,
     };
 }
 
@@ -165,6 +220,9 @@ function readReferenceImage(node: CanvasNodeData): ReferenceImage | null {
         type: node.metadata.mimeType || "image/png",
         dataUrl: node.metadata.content,
         storageKey: node.metadata.storageKey,
+        bytes: node.metadata.bytes,
+        width: node.metadata.naturalWidth,
+        height: node.metadata.naturalHeight,
     };
 }
 
@@ -191,6 +249,7 @@ function readReferenceAudio(node: CanvasNodeData): ReferenceAudio | null {
         type: node.metadata.mimeType || "audio/mpeg",
         url: node.metadata.content,
         storageKey: node.metadata.storageKey,
+        bytes: node.metadata.bytes,
         durationMs: node.metadata.durationMs,
     };
 }

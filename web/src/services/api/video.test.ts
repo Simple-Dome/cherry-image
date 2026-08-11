@@ -22,4 +22,13 @@ describe("getVideoPollingPolicy", () => {
         expect(policy.maxAttempts * policy.delayMs).toBe(10 * 60 * 1000);
         expect(policy.timeoutMessage).toBe("Seedance 视频生成超时，请稍后重试");
     });
+
+    test("uses the long polling window for 933 Jimeng tasks", () => {
+        const task: VideoGenerationTask = { id: "task_jimeng", provider: "jimeng933", model: "firefly-video-v2" };
+
+        const policy = getVideoPollingPolicy(task);
+
+        expect(policy.delayMs).toBe(5000);
+        expect(policy.maxAttempts * policy.delayMs).toBeGreaterThanOrEqual(20 * 60 * 1000);
+    });
 });

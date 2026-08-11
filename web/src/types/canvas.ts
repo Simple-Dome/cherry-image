@@ -14,9 +14,21 @@ export enum CanvasNodeType {
     Text = "text",
     Config = "config",
     Video = "video",
+    Storyboard = "storyboard",
     Audio = "audio",
     Group = "group",
 }
+
+export type CanvasStoryboardOrderMode = "list" | "custom";
+
+export type CanvasStoryboardShot = {
+    id: string;
+    prompt: string;
+    duration: number;
+    order?: number;
+};
+
+export type CanvasVideoFrameRole = "first_frame" | "last_frame";
 
 // 节点类型放开为字符串,内置类型用 CanvasNodeType,插件类型为 "<pluginId>:<name>"
 export type CanvasNodeTypeId = CanvasNodeType | (string & {});
@@ -27,7 +39,7 @@ export type CanvasImageGenerationType = "generation" | "edit";
 
 export type CanvasRemoteVideoTask = {
     id: string;
-    provider: "openai" | "seedance" | "plugin";
+    provider: "openai" | "seedance" | "jimeng933" | "plugin";
     model: string;
     remoteStatus: string;
     progress?: number;
@@ -75,6 +87,8 @@ export type CanvasNodeMetadata = {
     groupId?: string;
     interactive?: boolean; // 插件节点「交互 ⇄ 移动」开关状态(见 CanvasNodeDefinition.interactionToggle)
     remoteVideoTask?: CanvasRemoteVideoTask;
+    storyboardShots?: CanvasStoryboardShot[];
+    storyboardOrderMode?: CanvasStoryboardOrderMode;
 };
 
 export type CanvasNodeData = {
@@ -91,6 +105,7 @@ export type CanvasConnection = {
     id: string;
     fromNodeId: string;
     toNodeId: string;
+    targetRole?: CanvasVideoFrameRole;
 };
 
 export type CanvasAssistantReference = {

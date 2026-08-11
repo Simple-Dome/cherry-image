@@ -14,6 +14,8 @@ import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData } from "@/types/canvas";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import type { NodeGenerationContext } from "./canvas-node-generation";
+import { isJimeng933VideoConfig } from "@/lib/jimeng933-video";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
 
@@ -27,9 +29,10 @@ type CanvasNodePromptPanelProps = {
     mentionReferences?: CanvasResourceReference[];
     onImageSettingsOpenChange?: (open: boolean) => void;
     modeOverride?: CanvasNodeGenerationMode; // 插件节点用 useBuiltinPanel.mode 指定生成类型
+    videoStructure?: NodeGenerationContext;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, modeOverride }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, modeOverride, videoStructure }: CanvasNodePromptPanelProps) {
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -39,6 +42,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const hasImageContent = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content);
     const isEditingExistingContent = hasTextContent || hasImageContent;
     const [prompt, setPrompt] = useState(node.metadata?.prompt || "");
+    const hasStoryboard = mode === "video" && Boolean(videoStructure?.shots?.length);
 
     // 仅在切换到其它节点时恢复对应提示词;同一节点生成完成后继续保留当前输入。
     useEffect(() => {
@@ -53,7 +57,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
 
     const submit = () => {
         const text = prompt.trim();
-        if (!text || isRunning) return;
+        if ((!text && !hasStoryboard) || isRunning) return;
         onGenerate(node.id, mode, text);
     };
 
@@ -75,6 +79,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 style={{ background: "transparent", color: theme.node.text }}
                 placeholder={promptPlaceholder(mode, hasImageContent, hasTextContent)}
             />
+
+            {mode === "video" && videoStructure ? <VideoStructureSummary context={videoStructure} duration={Number(config.videoSeconds)} supported={isJimeng933VideoConfig(config)} theme={theme} /> : null}
 
             <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
@@ -112,7 +118,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     type="primary"
                     className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3"
                     danger={isRunning}
-                    disabled={!isRunning && !prompt.trim()}
+                    disabled={!isRunning && !prompt.trim() && !hasStoryboard}
                     onClick={() => (isRunning ? onStop(node.id) : submit())}
                     aria-label={isRunning ? "停止生成" : "生成"}
                 >
@@ -129,6 +135,21 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     </span>
                 </Button>
             </div>
+        </div>
+    );
+}
+
+function VideoStructureSummary({ context, duration, supported, theme }: { context: NodeGenerationContext; duration: number; supported: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    const roles = Object.values(context.imageRoles);
+    const first = roles.filter((role) => role === "first_frame").length;
+    const last = roles.filter((role) => role === "last_frame").length;
+    const conflict = first > 1 || last > 1 || Boolean(context.storyboardError) || Boolean(context.shots && context.storyboardDuration !== duration);
+    if (!first && !last && !context.storyboardCount) return null;
+    return (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-2 text-[11px]" style={{ borderColor: theme.node.stroke, color: conflict ? theme.frame.conflict : theme.node.muted }}>
+            <span>首帧 {first}</span><span>尾帧 {last}</span>
+            {context.storyboardCount ? <span>分镜 {context.shots?.length || 0} 镜 / {context.storyboardDuration} 秒</span> : null}
+            {!supported ? <span className="ml-auto">当前渠道不支持首尾帧与结构化分镜</span> : conflict ? <span className="ml-auto">请修正配置后再生成</span> : null}
         </div>
     );
 }
