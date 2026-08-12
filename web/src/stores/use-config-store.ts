@@ -38,8 +38,11 @@ export type AiConfig = {
     audioSpeed: string;
     audioInstructions: string;
     videoSeconds: string;
+    videoSize: string;
     vquality: string;
     videoGenerateAudio: string;
+    videoSeedEnabled: string;
+    videoSeed: string;
     videoWatermark: string;
     systemPrompt: string;
     reasoningEffort: ReasoningEffort;
@@ -96,9 +99,12 @@ export const defaultConfig: AiConfig = {
     audioFormat: "mp3",
     audioSpeed: "1",
     audioInstructions: "",
-    videoSeconds: "6",
+    videoSeconds: "5",
+    videoSize: "1280x720",
     vquality: "720",
     videoGenerateAudio: "true",
+    videoSeedEnabled: "false",
+    videoSeed: "0",
     videoWatermark: "false",
     systemPrompt: "",
     reasoningEffort: "auto",
@@ -214,7 +220,13 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
+            version: 2,
             partialize: (state) => ({ config: state.config, webdav: state.webdav }),
+            migrate: (persisted) => {
+                const state = (persisted || {}) as Partial<ConfigStore>;
+                const config = (state.config || {}) as Partial<AiConfig>;
+                return { ...state, config: { ...config, videoSeconds: config.videoSeconds === "6" ? "5" : config.videoSeconds, videoSize: config.videoSize || "1280x720" } } as ConfigStore;
+            },
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
@@ -241,9 +253,12 @@ export const useConfigStore = create<ConfigStore>()(
                         audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
                         audioInstructions: config.audioInstructions || "",
                         reasoningEffort: config.reasoningEffort || "auto",
-                        videoSeconds: config.videoSeconds || "6",
+                        videoSeconds: config.videoSeconds || "5",
+                        videoSize: config.videoSize || "1280x720",
                         vquality: config.vquality || "720",
                         videoGenerateAudio: config.videoGenerateAudio || "true",
+                        videoSeedEnabled: config.videoSeedEnabled || "false",
+                        videoSeed: config.videoSeed || "0",
                         videoWatermark: config.videoWatermark || "false",
                         canvasImageCount: config.canvasImageCount || "3",
                     },

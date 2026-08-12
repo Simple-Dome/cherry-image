@@ -187,8 +187,8 @@ function getVideoConfig() {
         current: {
             model,
             modelName: modelOptionName(model),
-            size: config.size || "1280x720",
-            seconds: config.videoSeconds || "6",
+            size: config.videoSize || "1280x720",
+            seconds: config.videoSeconds || "5",
             resolution: config.vquality || "720",
             generateAudio: config.videoGenerateAudio !== "false",
             watermark: config.videoWatermark === "true",
@@ -209,7 +209,7 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
         applied.model = value;
     }
     if (typeof input.size === "string" && input.size.trim()) {
-        configStore.updateConfig("size", input.size);
+        configStore.updateConfig("videoSize", input.size);
         applied.size = input.size;
     }
     if (typeof input.seconds === "string" && input.seconds.trim()) {

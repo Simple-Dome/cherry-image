@@ -59,12 +59,15 @@ export type CanvasNodeMetadata = {
     model?: string;
     reasoningEffort?: "auto" | "low" | "medium" | "high" | "xhigh";
     size?: string;
+    videoSize?: string;
     quality?: string;
     background?: string;
     count?: number;
     seconds?: string;
     vquality?: string;
     generateAudio?: string;
+    seedEnabled?: string;
+    seed?: string;
     watermark?: string;
     audioVoice?: string;
     audioFormat?: string;

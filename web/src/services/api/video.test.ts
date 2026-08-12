@@ -1,6 +1,20 @@
 import { describe, expect, test } from "bun:test";
 
-import { getVideoPollingPolicy, type VideoGenerationTask } from "./video";
+import { getVideoPollingPolicy, readVideoSeed, type VideoGenerationTask } from "./video";
+
+describe("readVideoSeed", () => {
+    test("does not send Seed while the switch is off", () => {
+        expect(readVideoSeed({ videoSeedEnabled: "false", videoSeed: "123" })).toBeUndefined();
+    });
+
+    test("keeps Seed 0 when the switch is on", () => {
+        expect(readVideoSeed({ videoSeedEnabled: "true", videoSeed: "0" })).toBe(0);
+    });
+
+    test("rejects an invalid enabled Seed", () => {
+        expect(() => readVideoSeed({ videoSeedEnabled: "true", videoSeed: "1.5" })).toThrow("Seed 必须是 0–2147483647 的整数");
+    });
+});
 
 describe("getVideoPollingPolicy", () => {
     test("polls OpenAI-compatible video tasks long enough for slow upstream completion", () => {

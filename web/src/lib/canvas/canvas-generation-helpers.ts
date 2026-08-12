@@ -92,17 +92,21 @@ export function getInputSummary(inputs: NodeGenerationInput[]) {
 
 export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
     const configuredQuality = node?.metadata?.quality || config.quality || defaultConfig.quality;
-    const configuredSize = node?.metadata?.size || config.size || defaultConfig.size;
+    const configuredImageSize = node?.metadata?.size || config.size || defaultConfig.size;
+    const configuredVideoSize = node?.metadata?.videoSize || config.videoSize || defaultConfig.videoSize;
     return {
         ...config,
         model: resolveModelForCapability(config, node?.metadata?.model, mode),
         reasoningEffort: node?.metadata?.reasoningEffort || config.reasoningEffort || defaultConfig.reasoningEffort,
         quality: mode === "image" ? CANVAS_IMAGE_QUALITY : configuredQuality,
-        size: mode === "image" ? resolveCanvasImageRequestSize(configuredSize, configuredQuality) : configuredSize,
+        size: mode === "image" ? resolveCanvasImageRequestSize(configuredImageSize, configuredQuality) : mode === "video" ? configuredVideoSize : configuredImageSize,
+        videoSize: configuredVideoSize,
         background: node?.metadata?.background ?? config.background ?? defaultConfig.background,
         videoSeconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
         vquality: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
         videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
+        videoSeedEnabled: node?.metadata?.seedEnabled || config.videoSeedEnabled || defaultConfig.videoSeedEnabled,
+        videoSeed: node?.metadata?.seed || config.videoSeed || defaultConfig.videoSeed,
         videoWatermark: node?.metadata?.watermark || config.videoWatermark || defaultConfig.videoWatermark,
         audioVoice: node?.metadata?.audioVoice || config.audioVoice || defaultConfig.audioVoice,
         audioFormat: node?.metadata?.audioFormat || config.audioFormat || defaultConfig.audioFormat,

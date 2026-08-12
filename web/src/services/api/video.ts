@@ -68,6 +68,15 @@ export type VideoRequestOptions = {
     onTaskStateChange?: (state: VideoGenerationTaskState) => void;
 };
 
+export function readVideoSeed(config: Pick<AiConfig, "videoSeedEnabled" | "videoSeed">) {
+    if (!boolConfig(config.videoSeedEnabled, false)) return undefined;
+    const value = config.videoSeed.trim();
+    if (!value) throw new Error("请输入 Seed");
+    const seed = Number(value);
+    if (!Number.isInteger(seed) || seed < 0 || seed > 2_147_483_647) throw new Error("Seed 必须是 0–2147483647 的整数");
+    return seed;
+}
+
 export class VideoTaskPausedError extends Error {
     constructor(
         message: string,
@@ -150,9 +159,10 @@ export async function createVideoGenerationTask(config: AiConfig, input: VideoGe
     const selectedModel = (config.model || config.videoModel).trim();
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const script = resolveModelScript(config, selectedModel);
-    if (script) return createPluginVideoTask(requestConfig, selectedModel, script, input.prompt, input.images, options);
+    if (script) return createPluginVideoTask(requestConfig, selectedModel, script, input, options);
     assertVideoConfig(requestConfig, requestConfig.model);
     if (isJimeng933VideoConfig(requestConfig)) return createJimeng933VideoTask(requestConfig, selectedModel, input, options);
+    if (input.seed !== undefined) throw new Error("当前视频渠道不支持 Seed");
     if (input.shots !== undefined) throw new Error("当前视频渠道不支持结构化分镜");
     if (isSeedanceVideoConfig(requestConfig)) {
         return createSeedanceTask(requestConfig, selectedModel, input.prompt, input.images, input.videos, input.audios, options);
@@ -173,16 +183,16 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
     return task.provider === "seedance" ? pollSeedanceTask(requestConfig, task, options) : pollOpenAIVideoTask(requestConfig, task, options);
 }
 
-async function createPluginVideoTask(config: AiConfig, model: string, script: string, prompt: string, references: ReferenceImage[], options?: Pick<VideoRequestOptions, "signal">): Promise<VideoGenerationTask> {
+async function createPluginVideoTask(config: AiConfig, model: string, script: string, input: VideoGenerationInput, options?: Pick<VideoRequestOptions, "signal">): Promise<VideoGenerationTask> {
     if (!config.baseUrl.trim()) throw new Error("请先配置 Base URL");
     if (!config.apiKey.trim()) throw new Error("请先配置 API Key");
-    const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const refs = await Promise.all(input.images.map((image) => imageToDataUrl(image)));
     const result = videoPluginResult(
         await runModelPlugin({
             capability: "video",
             script,
             config,
-            prompt,
+            prompt: input.prompt,
             images: refs,
             params: {
                 seconds: normalizeVideoSeconds(config.videoSeconds),
@@ -190,6 +200,7 @@ async function createPluginVideoTask(config: AiConfig, model: string, script: st
                 resolution: config.vquality,
                 ratio: config.size,
                 generateAudio: boolConfig(config.videoGenerateAudio, true),
+                seed: input.seed,
                 watermark: boolConfig(config.videoWatermark, false),
             },
             signal: options?.signal,
@@ -280,7 +291,7 @@ async function createJimeng933VideoTask(config: AiConfig, model: string, input: 
         duration,
         resolution,
         aspect_ratio: aspectRatio,
-        generate_audio: boolConfig(config.videoGenerateAudio, false),
+        generate_audio: boolConfig(config.videoGenerateAudio, true),
         ...(input.seed !== undefined ? { seed: input.seed } : {}),
         ...(shots ? { shots } : {}),
     };
@@ -688,7 +699,7 @@ function assertVideoReferencePolicy(policy: VideoReferencePolicy, images: Refere
 }
 
 function normalizeVideoSeconds(value: string) {
-    const seconds = Math.floor(Number(value) || 6);
+    const seconds = Math.floor(Number(value) || 5);
     return String(Math.max(1, Math.min(20, seconds)));
 }
 

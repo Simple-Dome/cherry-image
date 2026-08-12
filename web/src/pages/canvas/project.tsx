@@ -6,7 +6,7 @@ import { saveAs } from "file-saver";
 
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
-import { downloadVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, storeGeneratedVideo, VideoTaskPausedError, type VideoGenerationResult, type VideoGenerationTask, type VideoGenerationTaskState } from "@/services/api/video";
+import { downloadVideoGenerationTask, pollVideoGenerationTask, readVideoSeed, requestVideoGeneration, storeGeneratedVideo, VideoTaskPausedError, type VideoGenerationResult, type VideoGenerationTask, type VideoGenerationTaskState } from "@/services/api/video";
 import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
@@ -2445,10 +2445,12 @@ function InfiniteCanvasPage() {
                             prompt: effectivePrompt,
                             status: NODE_STATUS_LOADING,
                             model: generationConfig.model,
-                            size: generationConfig.size,
+                            videoSize: generationConfig.videoSize,
                             seconds: generationConfig.videoSeconds,
                             vquality: generationConfig.vquality,
                             generateAudio: generationConfig.videoGenerateAudio,
+                            seedEnabled: generationConfig.videoSeedEnabled,
+                            seed: generationConfig.videoSeed,
                             watermark: generationConfig.videoWatermark,
                             references: generationReferenceUrls(generationContext),
                         },
@@ -2464,7 +2466,7 @@ function InfiniteCanvasPage() {
                     try {
                         let result: VideoGenerationResult;
                         try {
-                            result = await requestVideoGeneration(generationConfig, { prompt: effectivePrompt, images: generationContext.referenceImages, videos: generationContext.referenceVideos, audios: generationContext.referenceAudios, imageRoles: generationContext.imageRoles, shots: generationContext.shots }, {
+                            result = await requestVideoGeneration(generationConfig, { prompt: effectivePrompt, seed: readVideoSeed(generationConfig), images: generationContext.referenceImages, videos: generationContext.referenceVideos, audios: generationContext.referenceAudios, imageRoles: generationContext.imageRoles, shots: generationContext.shots }, {
                                 signal: controller.signal,
                                 onReferenceImagesOptimized: (count) => {
                                     message.info(`已自动优化 ${count} 张视频参考图：转为 JPEG，长边压缩至 ${VIDEO_REFERENCE_IMAGE_MAX_EDGE}px 内，以提高视频生成成功率。`);
@@ -2501,10 +2503,12 @@ function InfiniteCanvasPage() {
                                               ...videoMetadata(video),
                                               prompt: effectivePrompt,
                                               model: generationConfig.model,
-                                              size: generationConfig.size,
+                                              videoSize: generationConfig.videoSize,
                                               seconds: generationConfig.videoSeconds,
                                               vquality: generationConfig.vquality,
                                               generateAudio: generationConfig.videoGenerateAudio,
+                                              seedEnabled: generationConfig.videoSeedEnabled,
+                                              seed: generationConfig.videoSeed,
                                               watermark: generationConfig.videoWatermark,
                                               references: generationReferenceUrls(generationContext),
                                           },
@@ -2696,7 +2700,7 @@ function InfiniteCanvasPage() {
                     if (structureError) throw new Error(structureError);
                     let result: VideoGenerationResult;
                     try {
-                        result = await requestVideoGeneration(generationConfig, { prompt, images: retryImages, videos: context.referenceVideos, audios: context.referenceAudios, imageRoles: context.imageRoles, shots: context.shots }, {
+                        result = await requestVideoGeneration(generationConfig, { prompt, seed: readVideoSeed(generationConfig), images: retryImages, videos: context.referenceVideos, audios: context.referenceAudios, imageRoles: context.imageRoles, shots: context.shots }, {
                             signal: controller.signal,
                             onTaskCreated: (task) => persistRemoteVideoTask(node.id, task),
                             onTaskStateChange: (state) => {
@@ -2730,10 +2734,12 @@ function InfiniteCanvasPage() {
                                           ...videoMetadata(video),
                                           prompt,
                                           model: generationConfig.model,
-                                          size: generationConfig.size,
+                                          videoSize: generationConfig.videoSize,
                                           seconds: generationConfig.videoSeconds,
                                           vquality: generationConfig.vquality,
                                           generateAudio: generationConfig.videoGenerateAudio,
+                                          seedEnabled: generationConfig.videoSeedEnabled,
+                                          seed: generationConfig.videoSeed,
                                           watermark: generationConfig.videoWatermark,
                                       },
                                   }

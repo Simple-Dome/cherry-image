@@ -8,14 +8,14 @@ import { saveAs } from "file-saver";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
-import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoSizeLabel } from "@/components/video-settings-panel";
+import { VideoSettingsPanel, isJimeng933FastVideoModel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoSizeLabel } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio, seedanceReferenceLabel, seedanceVideoReferenceError, seedanceVideoReferenceHint, SEEDANCE_REFERENCE_LIMITS, SEEDANCE_VIDEO_MIME_TYPES } from "@/lib/seedance-video";
 import { VIDEO_REFERENCE_IMAGE_MAX_EDGE } from "@/lib/video-reference-preprocess";
 import { deleteStoredMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
-import { createVideoGenerationTask, downloadVideoGenerationTask, getVideoPollingPolicy, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
+import { createVideoGenerationTask, downloadVideoGenerationTask, getVideoPollingPolicy, pollVideoGenerationTask, readVideoSeed, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -62,7 +62,7 @@ type GenerationLog = {
     error?: string;
 };
 
-type GenerationLogConfig = Pick<AiConfig, "model" | "videoModel" | "size" | "vquality" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark">;
+type GenerationLogConfig = Pick<AiConfig, "model" | "videoModel" | "videoSize" | "vquality" | "videoSeconds" | "videoGenerateAudio" | "videoSeedEnabled" | "videoSeed" | "videoWatermark">;
 
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
@@ -209,7 +209,7 @@ export default function VideoPage() {
         const batchStartedAt = performance.now();
         setStartedAt(batchStartedAt);
         try {
-            const task = await createVideoGenerationTask(snapshot.config, { prompt: snapshot.text, images: snapshot.references, videos: snapshot.videoReferences, audios: snapshot.audioReferences }, {
+            const task = await createVideoGenerationTask(snapshot.config, { prompt: snapshot.text, seed: readVideoSeed(snapshot.config), images: snapshot.references, videos: snapshot.videoReferences, audios: snapshot.audioReferences }, {
                 onReferenceImagesOptimized: (count) => {
                     message.info(`已自动优化 ${count} 张视频参考图：转为 JPEG，长边压缩至 ${VIDEO_REFERENCE_IMAGE_MAX_EDGE}px 内，以提高视频生成成功率。`);
                 },
@@ -401,10 +401,12 @@ export default function VideoPage() {
         setVideoReferences(log.videoReferences || []);
         setAudioReferences(log.audioReferences || []);
         if (log.config.videoModel || log.model) updateConfig("videoModel", log.config.videoModel || log.model);
-        if (log.config.size) updateConfig("size", log.config.size);
+        if (log.config.videoSize) updateConfig("videoSize", log.config.videoSize);
         if (log.config.vquality) updateConfig("vquality", log.config.vquality);
         if (log.config.videoSeconds) updateConfig("videoSeconds", log.config.videoSeconds);
         if (log.config.videoGenerateAudio) updateConfig("videoGenerateAudio", log.config.videoGenerateAudio);
+        if (log.config.videoSeedEnabled) updateConfig("videoSeedEnabled", log.config.videoSeedEnabled);
+        if (log.config.videoSeed) updateConfig("videoSeed", log.config.videoSeed);
         if (log.config.videoWatermark) updateConfig("videoWatermark", log.config.videoWatermark);
         setResults(log.status === "生成中" ? [{ id: log.id, status: "pending" }] : log.video ? [{ id: log.video.id, status: "success", video: log.video }] : [{ id: log.id, status: "failed", error: log.error || "生成失败" }]);
     };
@@ -550,7 +552,7 @@ export default function VideoPage() {
 
                             <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm dark:border-stone-800 dark:bg-stone-900 sm:hidden">
                                 <span className="truncate text-stone-500 dark:text-stone-400">
-                                    {modelOptionLabel(effectiveConfig, model)} · {normalizeResolution(effectiveConfig.vquality)}p · {videoSizeLabel(effectiveConfig.size)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s
+                                    {modelOptionLabel(effectiveConfig, model)} · {normalizeResolution(effectiveConfig.vquality)}p · {videoSizeLabel(effectiveConfig.videoSize)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s
                                 </span>
                                 <Button size="small" type="text" icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
                                     调整
@@ -617,15 +619,19 @@ export default function VideoPage() {
 
 function GenerationSettings({ config, model, updateConfig, openConfigDialog }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const changeModel = (value: string) => {
+        updateConfig("videoModel", value);
+        if (isJimeng933FastVideoModel(config, value) && normalizeVideoResolutionValue(config.vquality) === "1080") updateConfig("vquality", "720");
+    };
 
     return (
         <>
             <label className="col-span-2 block min-w-0 sm:col-span-1">
                 <span className="mb-1.5 block text-sm font-semibold sm:mb-2 sm:text-base">模型</span>
-                <ModelPicker config={config} value={model} onChange={(value) => updateConfig("videoModel", value)} capability="video" fullWidth onMissingConfig={() => openConfigDialog(false)} />
+                <ModelPicker config={config} value={model} onChange={changeModel} capability="video" fullWidth onMissingConfig={() => openConfigDialog(false)} />
             </label>
             <div className="col-span-2">
-                <VideoSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" />
+                <VideoSettingsPanel config={config} model={model} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" />
             </div>
         </>
     );
@@ -804,7 +810,7 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         videoReferences,
         audioReferences,
         durationMs: log.durationMs || 0,
-        size: log.size || config.size || "",
+        size: log.size || config.videoSize || "",
         resolution: normalizeResolution(log.resolution || config.vquality || ""),
         seconds: log.seconds || config.videoSeconds || "",
         status: log.status || "成功",
@@ -870,10 +876,12 @@ function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
     return {
         model: log.config?.model || log.model || "",
         videoModel: log.config?.videoModel || log.model || "",
-        size: log.config?.size || log.size || "",
+        videoSize: log.config?.videoSize || log.size || "1280x720",
         vquality: normalizeResolution(log.config?.vquality || log.resolution || ""),
         videoSeconds: log.config?.videoSeconds || log.seconds || "",
         videoGenerateAudio: log.config?.videoGenerateAudio || "true",
+        videoSeedEnabled: log.config?.videoSeedEnabled || "false",
+        videoSeed: log.config?.videoSeed || "0",
         videoWatermark: log.config?.videoWatermark || "false",
     };
 }
@@ -882,10 +890,12 @@ function buildLog({ prompt, model, config, references, videoReferences, audioRef
     const logConfig = {
         model: config.model,
         videoModel: config.videoModel,
-        size: config.size,
+        videoSize: config.videoSize,
         vquality: normalizeResolution(config.vquality),
         videoSeconds: config.videoSeconds,
         videoGenerateAudio: config.videoGenerateAudio,
+        videoSeedEnabled: config.videoSeedEnabled,
+        videoSeed: config.videoSeed,
         videoWatermark: config.videoWatermark,
     };
     return {
@@ -900,7 +910,7 @@ function buildLog({ prompt, model, config, references, videoReferences, audioRef
         videoReferences,
         audioReferences,
         durationMs,
-        size: logConfig.size,
+        size: logConfig.videoSize,
         resolution: logConfig.vquality,
         seconds: logConfig.videoSeconds,
         status,
@@ -912,21 +922,25 @@ function buildLog({ prompt, model, config, references, videoReferences, audioRef
 
 function buildVideoConfig(config: AiConfig, model: string): AiConfig {
     const seedance = isSeedanceVideoConfig({ ...config, model });
+    const videoSize = seedance ? normalizeSeedanceRatio(config.videoSize) : normalizeVideoSize(config.videoSize);
     return {
         ...config,
         model,
         videoModel: model,
-        size: seedance ? normalizeSeedanceRatio(config.size) : normalizeVideoSize(config.size),
+        size: videoSize,
+        videoSize,
         videoSeconds: normalizeVideoSeconds(config.videoSeconds),
         vquality: normalizeResolution(config.vquality),
         videoGenerateAudio: String(boolConfig(config.videoGenerateAudio, true)),
+        videoSeedEnabled: String(boolConfig(config.videoSeedEnabled, false)),
+        videoSeed: config.videoSeed || "0",
         videoWatermark: String(boolConfig(config.videoWatermark, false)),
     };
 }
 
 function normalizeVideoSeconds(value: string) {
     if (String(value).trim() === "-1") return "-1";
-    const seconds = Math.floor(Number(value) || 6);
+    const seconds = Math.floor(Number(value) || 5);
     return String(Math.max(1, Math.min(20, seconds)));
 }
 

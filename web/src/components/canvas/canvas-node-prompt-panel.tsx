@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { ArrowUp, LoaderCircle, Square } from "lucide-react";
-import { Button } from "antd";
+import { ArrowUp, LoaderCircle, Square, Volume2 } from "lucide-react";
+import { Button, Switch } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
+import { isJimeng933FastVideoModel, normalizeVideoResolutionValue } from "@/components/video-settings-panel";
 import { defaultConfig, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { boolConfig } from "@/lib/seedance-video";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
@@ -60,6 +62,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         if ((!text && !hasStoryboard) || isRunning) return;
         onGenerate(node.id, mode, text);
     };
+    const changeVideoModel = (model: string) => onConfigChange(node.id, { model, ...(isJimeng933FastVideoModel(config, model) && normalizeVideoResolutionValue(config.vquality) === "1080" ? { vquality: "720" } : {}) });
 
     return (
         <div
@@ -99,8 +102,13 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         </>
                     ) : mode === "video" ? (
                         <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
-                            <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                            <ModelPicker config={config} value={config.model} onChange={changeVideoModel} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
+                            <CanvasVideoSettingsPopover config={config} model={config.model} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                            <label className="flex h-10 shrink-0 cursor-pointer items-center gap-1.5 px-1 text-xs" style={{ color: theme.node.muted }} title="是否让视频模型生成声音">
+                                <Volume2 className="size-3.5" />
+                                <span>声音</span>
+                                <Switch size="small" checked={boolConfig(config.videoGenerateAudio, true)} onChange={(checked) => onConfigChange(node.id, { generateAudio: String(checked) })} />
+                            </label>
                         </>
                     ) : mode === "audio" ? (
                         <>
@@ -165,10 +173,13 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         reasoningEffort: node.metadata?.reasoningEffort || globalConfig.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
         size: node.metadata?.size || globalConfig.size || defaultConfig.size,
+        videoSize: node.metadata?.videoSize || globalConfig.videoSize || defaultConfig.videoSize,
         background: node.metadata?.background ?? globalConfig.background ?? defaultConfig.background,
         videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds,
         vquality: node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality,
         videoGenerateAudio: node.metadata?.generateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,
+        videoSeedEnabled: node.metadata?.seedEnabled || globalConfig.videoSeedEnabled || defaultConfig.videoSeedEnabled,
+        videoSeed: node.metadata?.seed || globalConfig.videoSeed || defaultConfig.videoSeed,
         videoWatermark: node.metadata?.watermark || globalConfig.videoWatermark || defaultConfig.videoWatermark,
         audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice || defaultConfig.audioVoice,
         audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat || defaultConfig.audioFormat,
@@ -187,7 +198,10 @@ function promptPlaceholder(mode: CanvasNodeGenerationMode, hasImageContent: bool
 
 function videoConfigPatch(key: keyof AiConfig, value: string) {
     if (key === "videoSeconds") return { seconds: value };
+    if (key === "videoSize") return { videoSize: value };
     if (key === "videoGenerateAudio") return { generateAudio: value };
+    if (key === "videoSeedEnabled") return { seedEnabled: value };
+    if (key === "videoSeed") return { seed: value };
     if (key === "videoWatermark") return { watermark: value };
     return { [key]: value };
 }
