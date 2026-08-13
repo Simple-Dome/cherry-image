@@ -11,6 +11,7 @@ const apiFormatOptions: Array<{ label: string; value: ApiCallFormat }> = [
     { label: "Gemini", value: "gemini" },
     { label: "火山方舟", value: "ark" },
     { label: "933 即梦", value: "jimeng933" },
+    { label: "431 即梦", value: "jimeng431" },
 ];
 
 const capabilityOptions: Array<{ label: string; value: ModelCapability }> = [
@@ -38,7 +39,8 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
 
     const changeApiFormat = (apiFormat: ApiCallFormat) => {
         const baseUrl = !draft.baseUrl.trim() || draft.baseUrl.trim() === defaultBaseUrlForApiFormat(draft.apiFormat) ? defaultBaseUrlForApiFormat(apiFormat) : draft.baseUrl;
-        patch({ apiFormat, baseUrl });
+        const models = apiFormat === "jimeng431" ? draft.models.filter((model) => model.name === "leonardo-seedance-2.0" || model.name === "leonardo-seedance-2.0-fast").map((model) => ({ ...model, capability: "video" as const })) : draft.models;
+        patch({ apiFormat, baseUrl, models });
     };
 
     const applySelection = (names: string[]) => {
@@ -51,7 +53,8 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const removeModel = (name: string) => setModels(draft.models.filter((model) => model.name !== name));
 
     const save = () => {
-        onSave({ ...draft, name: draft.name.trim() || "未命名渠道", models: normalizeChannelModels(draft.models) });
+        const models = normalizeChannelModels(draft.models).filter((model) => draft.apiFormat !== "jimeng431" || model.name === "leonardo-seedance-2.0" || model.name === "leonardo-seedance-2.0-fast").map((model) => draft.apiFormat === "jimeng431" ? { ...model, capability: "video" as const } : model);
+        onSave({ ...draft, name: draft.name.trim() || "未命名渠道", models });
         onClose();
     };
 

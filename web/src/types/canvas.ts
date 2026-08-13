@@ -39,7 +39,7 @@ export type CanvasImageGenerationType = "generation" | "edit";
 
 export type CanvasRemoteVideoTask = {
     id: string;
-    provider: "openai" | "seedance" | "jimeng933" | "plugin";
+    provider: "openai" | "seedance" | "jimeng933" | "jimeng431" | "plugin";
     model: string;
     remoteStatus: string;
     progress?: number;

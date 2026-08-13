@@ -12,13 +12,14 @@ import { VideoSettingsPanel, isJimeng933FastVideoModel, normalizeVideoResolution
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio, seedanceReferenceLabel, seedanceVideoReferenceError, seedanceVideoReferenceHint, SEEDANCE_REFERENCE_LIMITS, SEEDANCE_VIDEO_MIME_TYPES } from "@/lib/seedance-video";
+import { JIMENG431_REFERENCE_LIMITS, isJimeng431VideoConfig } from "@/lib/jimeng431-video";
 import { VIDEO_REFERENCE_IMAGE_MAX_EDGE } from "@/lib/video-reference-preprocess";
 import { deleteStoredMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { createVideoGenerationTask, downloadVideoGenerationTask, getVideoPollingPolicy, pollVideoGenerationTask, readVideoSeed, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
-import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionLabel, resolveModelRequestConfig, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -105,6 +106,8 @@ export default function VideoPage() {
     const agentTaskIdRef = useRef<string | undefined>(undefined);
 
     const model = effectiveConfig.videoModel || effectiveConfig.model;
+    const isJimeng431 = isJimeng431VideoConfig({ ...effectiveConfig, model });
+    const referenceLimits = isJimeng431 ? { images: JIMENG431_REFERENCE_LIMITS.images, videos: JIMENG431_REFERENCE_LIMITS.videos, audios: JIMENG431_REFERENCE_LIMITS.audios, imageMaxBytes: JIMENG431_REFERENCE_LIMITS.imageMaxBytes, videoMaxBytes: JIMENG431_REFERENCE_LIMITS.videoTotalMaxBytes, audioMaxBytes: JIMENG431_REFERENCE_LIMITS.audioMaxBytes } : SEEDANCE_REFERENCE_LIMITS;
     const canGenerate = Boolean(prompt.trim());
 
     useEffect(() => {
@@ -121,12 +124,19 @@ export default function VideoPage() {
         const selectedFiles = Array.from(files || []);
         const unsupported = selectedFiles.filter((file) => !file.type.startsWith("image/") && !SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && !isSupportedAudioFile(file));
         if (unsupported.length) message.warning("已忽略不支持的参考资产，请使用图片、mp4/mov 视频或 mp3/wav 音频");
-        const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/") && file.size <= SEEDANCE_REFERENCE_LIMITS.imageMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.images - references.length);
-        const videoFiles = selectedFiles.filter((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size <= SEEDANCE_REFERENCE_LIMITS.videoMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.videos - videoReferences.length);
-        const audioFiles = selectedFiles.filter((file) => isSupportedAudioFile(file) && file.size <= SEEDANCE_REFERENCE_LIMITS.audioMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.audios - audioReferences.length);
-        if (selectedFiles.some((file) => file.type.startsWith("image/") && file.size > SEEDANCE_REFERENCE_LIMITS.imageMaxBytes)) message.warning("已忽略超过 30MB 的参考图");
-        if (selectedFiles.some((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size > SEEDANCE_REFERENCE_LIMITS.videoMaxBytes)) message.warning("已忽略超过 200MB 的参考视频");
-        if (selectedFiles.some((file) => isSupportedAudioFile(file) && file.size > SEEDANCE_REFERENCE_LIMITS.audioMaxBytes)) message.warning("已忽略超过 15MB 的参考音频");
+        const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/") && file.size <= referenceLimits.imageMaxBytes).slice(0, referenceLimits.images - references.length);
+        const remainingVideoBytes = isJimeng431 ? Math.max(0, JIMENG431_REFERENCE_LIMITS.videoTotalMaxBytes - videoReferences.reduce((total, item) => total + (item.bytes || 0), 0)) : Number.POSITIVE_INFINITY;
+        let selectedVideoBytes = 0;
+        const videoFiles = selectedFiles.filter((file) => {
+            if (!SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) || file.size > referenceLimits.videoMaxBytes || selectedVideoBytes + file.size > remainingVideoBytes) return false;
+            selectedVideoBytes += file.size;
+            return true;
+        }).slice(0, referenceLimits.videos - videoReferences.length);
+        const audioFiles = selectedFiles.filter((file) => isSupportedAudioFile(file) && file.size <= referenceLimits.audioMaxBytes).slice(0, referenceLimits.audios - audioReferences.length);
+        if (selectedFiles.some((file) => file.type.startsWith("image/") && file.size > referenceLimits.imageMaxBytes)) message.warning("已忽略超过 30MB 的参考图");
+        if (isJimeng431 && selectedFiles.some((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && (file.size > referenceLimits.videoMaxBytes || file.size > remainingVideoBytes))) message.warning("431 即梦参考视频合计不能超过 50MB");
+        else if (selectedFiles.some((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size > referenceLimits.videoMaxBytes)) message.warning("已忽略超过 200MB 的参考视频");
+        if (selectedFiles.some((file) => isSupportedAudioFile(file) && file.size > referenceLimits.audioMaxBytes)) message.warning("已忽略超过 15MB 的参考音频");
         const nextReferences = await Promise.all(
             imageFiles.map(async (file) => {
                 const image = await uploadImage(file);
@@ -148,10 +158,11 @@ export default function VideoPage() {
                 }),
             ),
             message.warning,
+            isJimeng431 ? { minDurationMs: 0, maxCount: 1 } : undefined,
         );
-        setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
-        setVideoReferences((value) => [...value, ...nextVideoReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.videos));
-        setAudioReferences((value) => [...value, ...nextAudioReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.audios));
+        setReferences((value) => [...value, ...nextReferences].slice(0, referenceLimits.images));
+        setVideoReferences((value) => [...value, ...nextVideoReferences].slice(0, referenceLimits.videos));
+        setAudioReferences((value) => [...value, ...nextAudioReferences].slice(0, referenceLimits.audios));
     };
 
     const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>, target: "image" | "video" | "audio") => {
@@ -182,12 +193,12 @@ export default function VideoPage() {
                 return;
             }
             const nextReferences = await Promise.all(
-                blobs.slice(0, SEEDANCE_REFERENCE_LIMITS.images - references.length).map(async (blob, index) => {
+                blobs.slice(0, referenceLimits.images - references.length).map(async (blob, index) => {
                     const image = await uploadImage(blob);
                     return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, width: image.width, height: image.height };
                 }),
             );
-            setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
+            setReferences((value) => [...value, ...nextReferences].slice(0, referenceLimits.images));
             message.success(`已读取 ${nextReferences.length} 张参考图`);
         } catch {
             message.error("剪切板里没有可读取的图片");
@@ -210,6 +221,7 @@ export default function VideoPage() {
         setStartedAt(batchStartedAt);
         try {
             const task = await createVideoGenerationTask(snapshot.config, { prompt: snapshot.text, seed: readVideoSeed(snapshot.config), images: snapshot.references, videos: snapshot.videoReferences, audios: snapshot.audioReferences }, {
+                idempotencyKey: nanoid(),
                 onReferenceImagesOptimized: (count) => {
                     message.info(`已自动优化 ${count} 张视频参考图：转为 JPEG，长边压缩至 ${VIDEO_REFERENCE_IMAGE_MAX_EDGE}px 内，以提高视频生成成功率。`);
                 },
@@ -260,7 +272,7 @@ export default function VideoPage() {
             openConfigDialog(true);
             return null;
         }
-        const videoReferenceError = seedanceVideoReferenceError(videoReferences);
+            const videoReferenceError = isJimeng431 ? "" : seedanceVideoReferenceError(videoReferences);
         if (videoReferenceError) {
             message.error(`${videoReferenceError}。${seedanceVideoReferenceHint}`);
             return null;
@@ -294,9 +306,9 @@ export default function VideoPage() {
             setPrompt(payload.content);
         } else if (payload.kind === "image") {
             const stored = await uploadImage(payload.dataUrl);
-            setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, width: stored.width, height: stored.height }].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
+            setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, width: stored.width, height: stored.height }].slice(0, referenceLimits.images));
         } else if (payload.kind === "video") {
-            setVideoReferences((value) => [...value, { id: nanoid(), name: payload.title, type: "video/mp4", url: payload.url, storageKey: payload.storageKey, width: payload.width, height: payload.height }].slice(0, SEEDANCE_REFERENCE_LIMITS.videos));
+            setVideoReferences((value) => [...value, { id: nanoid(), name: payload.title, type: "video/mp4", url: payload.url, storageKey: payload.storageKey, width: payload.width, height: payload.height }].slice(0, referenceLimits.videos));
         }
         setAssetPickerOpen(false);
     };
@@ -480,7 +492,7 @@ export default function VideoPage() {
                                             </button>
                                         </div>
                                     ))}
-                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget === "image" ? "松开即可上传参考资产" : "暂无参考图，可拖入文件，最多 9 张"}</div> : null}
+                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget === "image" ? "松开即可上传参考资产" : `暂无参考图，可拖入文件，最多 ${referenceLimits.images} 张`}</div> : null}
                                 </div>
                             </div>
 
@@ -511,7 +523,7 @@ export default function VideoPage() {
                                             </button>
                                         </div>
                                     ))}
-                                    {!videoReferences.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget === "video" ? "松开即可上传参考资产" : "暂无参考视频，可拖入文件，最多 3 个"}</div> : null}
+                                    {!videoReferences.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget === "video" ? "松开即可上传参考资产" : `暂无参考视频，可拖入文件，最多 ${referenceLimits.videos} 个`}</div> : null}
                                 </div>
                             </div>
 
@@ -546,7 +558,7 @@ export default function VideoPage() {
                                             </button>
                                         </div>
                                     ))}
-                                    {!audioReferences.length ? <div className="flex min-w-full items-center justify-center text-center text-sm text-stone-500">{referenceDragTarget === "audio" ? "松开即可上传参考资产" : "暂无参考音频，可拖入文件，最多 3 个，mp3/wav，单个 15MB 内"}</div> : null}
+                                    {!audioReferences.length ? <div className="flex min-w-full items-center justify-center text-center text-sm text-stone-500">{referenceDragTarget === "audio" ? "松开即可上传参考资产" : `暂无参考音频，可拖入文件，最多 ${referenceLimits.audios} 个，mp3/wav，单个 15MB 内`}</div> : null}
                                 </div>
                             </div>
 
@@ -834,12 +846,12 @@ function isSupportedAudioFile(file: File) {
     return file.type === "audio/mpeg" || file.type === "audio/mp3" || file.type === "audio/wav" || file.type === "audio/x-wav" || /\.(mp3|wav)$/i.test(file.name);
 }
 
-function filterAudioReferencesByDuration(existing: ReferenceAudio[], next: ReferenceAudio[], warn: (content: string) => void) {
+function filterAudioReferencesByDuration(existing: ReferenceAudio[], next: ReferenceAudio[], warn: (content: string) => void, limits: { minDurationMs: number; maxCount: number } = { minDurationMs: 2_000, maxCount: SEEDANCE_REFERENCE_LIMITS.audios }) {
     let total = existing.reduce((sum, item) => sum + (item.durationMs || 0), 0);
     const accepted: ReferenceAudio[] = [];
     let skipped = false;
-    for (const item of next) {
-        if (item.durationMs && (item.durationMs < 2000 || item.durationMs > 15000)) {
+    for (const item of next.slice(0, Math.max(0, limits.maxCount - existing.length))) {
+        if (item.durationMs && (item.durationMs < limits.minDurationMs || item.durationMs > 15000)) {
             skipped = true;
             continue;
         }
@@ -850,7 +862,7 @@ function filterAudioReferencesByDuration(existing: ReferenceAudio[], next: Refer
         total += item.durationMs || 0;
         accepted.push(item);
     }
-    if (skipped) warn("已忽略不符合时长要求的参考音频：单个 2-15 秒，总时长不超过 15 秒");
+    if (skipped) warn(limits.minDurationMs ? "已忽略不符合时长要求的参考音频：单个 2-15 秒，总时长不超过 15 秒" : "已忽略不符合要求的参考音频：单个不超过 15 秒");
     return accepted;
 }
 
@@ -922,7 +934,8 @@ function buildLog({ prompt, model, config, references, videoReferences, audioRef
 
 function buildVideoConfig(config: AiConfig, model: string): AiConfig {
     const seedance = isSeedanceVideoConfig({ ...config, model });
-    const videoSize = seedance ? normalizeSeedanceRatio(config.videoSize) : normalizeVideoSize(config.videoSize);
+    const requestConfig = resolveModelRequestConfig(config, model);
+    const videoSize = requestConfig.apiFormat === "jimeng431" ? config.videoSize : seedance ? normalizeSeedanceRatio(config.videoSize) : normalizeVideoSize(config.videoSize);
     return {
         ...config,
         model,

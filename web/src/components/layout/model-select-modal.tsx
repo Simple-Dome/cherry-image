@@ -51,6 +51,10 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
     const addManual = () => {
         const name = manual.trim();
         if (!name) return;
+        if (channel?.apiFormat === "jimeng431" && name !== "leonardo-seedance-2.0" && name !== "leonardo-seedance-2.0-fast") {
+            message.error("431 即梦仅支持 leonardo-seedance-2.0 和 leonardo-seedance-2.0-fast");
+            return;
+        }
         if (!fetched.includes(name) && !existing.includes(name)) setFetched((current) => [name, ...current]);
         setSelected((current) => new Set(current).add(name));
         setManual("");

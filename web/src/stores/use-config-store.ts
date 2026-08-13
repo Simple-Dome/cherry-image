@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
-export type ApiCallFormat = "openai" | "gemini" | "ark" | "jimeng933";
+export type ApiCallFormat = "openai" | "gemini" | "ark" | "jimeng933" | "jimeng431";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
 
@@ -69,6 +69,7 @@ const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 const ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const JIMENG933_BASE_URL = "https://gptch.cloud";
+const JIMENG431_BASE_URL = "https://gptch.cloud";
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -388,11 +389,12 @@ export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
     if (apiFormat === "gemini") return GEMINI_BASE_URL;
     if (apiFormat === "ark") return ARK_BASE_URL;
     if (apiFormat === "jimeng933") return JIMENG933_BASE_URL;
+    if (apiFormat === "jimeng431") return JIMENG431_BASE_URL;
     return OPENAI_BASE_URL;
 }
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
-    return apiFormat === "gemini" || apiFormat === "ark" || apiFormat === "jimeng933" ? apiFormat : "openai";
+    return apiFormat === "gemini" || apiFormat === "ark" || apiFormat === "jimeng933" || apiFormat === "jimeng431" ? apiFormat : "openai";
 }
 
 function uniqueModelOptions(models: string[]) {

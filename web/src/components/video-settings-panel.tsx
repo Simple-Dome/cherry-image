@@ -2,6 +2,8 @@ import { type ReactNode } from "react";
 import { Slider, Switch } from "antd";
 
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
+import { JIMENG431_DURATION_OPTIONS, JIMENG431_RATIO_OPTIONS, JIMENG431_RESOLUTION_OPTIONS, isJimeng431VideoConfig, normalizeJimeng431Ratio, normalizeJimeng431Resolution } from "@/lib/jimeng431-video";
+import { JIMENG933_DURATION_OPTIONS, JIMENG933_RATIO_OPTIONS, JIMENG933_RESOLUTION_OPTIONS, isJimeng933VideoConfig, normalizeJimeng933Ratio, normalizeJimeng933Resolution } from "@/lib/jimeng933-video";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
@@ -41,10 +43,19 @@ export function VideoSettingsPanel({ config, model, onConfigChange, theme, showT
         return <SeedanceVideoSettingsPanel config={config} model={model} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 
+    const isJimeng431 = isJimeng431VideoConfig(requestConfig);
+    const isJimeng933 = isJimeng933VideoConfig(requestConfig);
     const seconds = config.videoSeconds || "5";
     const size = normalizeVideoSizeValue(config.videoSize);
     const dimensions = readSizeDimensions(size);
-    const resolution = normalizeVideoResolutionValue(config.vquality);
+    const resolution = isJimeng431 ? normalizeJimeng431Resolution(config.vquality) : isJimeng933 ? normalizeJimeng933Resolution(config.vquality) : normalizeVideoResolutionValue(config.vquality);
+    const ratio = isJimeng431 ? normalizeJimeng431Ratio(config.videoSize) : normalizeJimeng933Ratio(config.videoSize);
+    const currentResolutionOptions = isJimeng431 ? JIMENG431_RESOLUTION_OPTIONS.map(optionItem) : isJimeng933 ? JIMENG933_RESOLUTION_OPTIONS.map(optionItem) : resolutionOptions;
+    const currentRatioOptions = isJimeng431 ? JIMENG431_RATIO_OPTIONS : isJimeng933 ? JIMENG933_RATIO_OPTIONS : null;
+    const currentDurationOptions = isJimeng431 ? JIMENG431_DURATION_OPTIONS : isJimeng933 ? JIMENG933_DURATION_OPTIONS : null;
+    const invalidResolution = !currentResolutionOptions.some((item) => item.value.replace(/p$/, "") === resolution.replace(/p$/, ""));
+    const invalidRatio = Boolean(currentRatioOptions && !currentRatioOptions.includes(ratio as never));
+    const invalidDuration = Boolean(currentDurationOptions && !currentDurationOptions.includes(Number(seconds) as never));
     const fast1080Disabled = isJimeng933FastVideoModel(config, model);
     const generateAudio = boolConfig(config.videoGenerateAudio, true);
     const updateDimension = (key: "width" | "height", value: number | null) => {
@@ -58,15 +69,26 @@ export function VideoSettingsPanel({ config, model, onConfigChange, theme, showT
                 {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
                 <SettingGroup title="清晰度" color={theme.node.muted}>
                     <div className="grid grid-cols-3 gap-2.5">
-                        {resolutionOptions.map((item) => (
-                            <OptionPill key={item.value} selected={resolution === item.value} disabled={fast1080Disabled && item.value === "1080"} title={fast1080Disabled && item.value === "1080" ? "Fast 模型不支持 1080p" : undefined} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
+                        {currentResolutionOptions.map((item) => (
+                            <OptionPill key={item.value} selected={resolution.replace(/p$/, "") === item.value.replace(/p$/, "")} disabled={fast1080Disabled && item.value.replace(/p$/, "") === "1080"} title={fast1080Disabled && item.value.replace(/p$/, "") === "1080" ? "Fast 模型不支持 1080p" : undefined} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
                                 {item.label}
                             </OptionPill>
                         ))}
                     </div>
+                    {invalidResolution ? <InvalidSettingHint>当前保存的 {config.vquality || "空值"} 不受此模型支持，请重新选择</InvalidSettingHint> : null}
                 </SettingGroup>
                 <SettingGroup title="尺寸" color={theme.node.muted}>
-                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
+                    {currentRatioOptions ? (
+                        <div className="grid grid-cols-3 gap-2.5">
+                            {currentRatioOptions.map((value) => (
+                                <button key={value} type="button" className="flex h-[68px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent px-1 text-sm transition hover:opacity-80" style={{ borderColor: ratio === value ? theme.node.text : theme.node.stroke, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={() => onConfigChange("videoSize", value)}>
+                                    <SizePreview width={ratioPreview(value).width} height={ratioPreview(value).height} color={theme.node.text} />
+                                    <span>{ratioLabel(value)}</span>
+                                    <span className="text-[10px] leading-none opacity-55">{value}</span>
+                                </button>
+                            ))}
+                        </div>
+                    ) : <><div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
                         <DimensionInput prefix="W" value={dimensions.width} disabled={size === "auto"} theme={theme} onChange={(value) => updateDimension("width", value)} />
                         <span className="text-lg opacity-45">↔</span>
                         <DimensionInput prefix="H" value={dimensions.height} disabled={size === "auto"} theme={theme} onChange={(value) => updateDimension("height", value)} />
@@ -90,10 +112,13 @@ export function VideoSettingsPanel({ config, model, onConfigChange, theme, showT
                                 )}
                             </button>
                         ))}
-                    </div>
+                    </div></>}
+                    {invalidRatio ? <InvalidSettingHint>当前保存的 {config.videoSize || "空值"} 不受此模型支持，请重新选择</InvalidSettingHint> : null}
                 </SettingGroup>
                 <SettingGroup title="视频时长" color={theme.node.muted}>
-                    <div className="flex items-center gap-3">
+                    {currentDurationOptions ? <div className="grid grid-cols-3 gap-2.5">
+                        {currentDurationOptions.map((value) => <OptionPill key={value} selected={Number(seconds) === value} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>{value}s</OptionPill>)}
+                    </div> : <div className="flex items-center gap-3">
                         <Slider
                             className="flex-1"
                             min={1}
@@ -105,12 +130,13 @@ export function VideoSettingsPanel({ config, model, onConfigChange, theme, showT
                         <span className="w-9 text-right text-sm" style={{ color: theme.node.text }}>
                             {clampVideoSeconds(seconds)}s
                         </span>
-                    </div>
+                    </div>}
+                    {invalidDuration ? <InvalidSettingHint>当前保存的 {seconds} 秒不受此模型支持，请重新选择</InvalidSettingHint> : null}
                 </SettingGroup>
                 <SettingGroup title="输出" color={theme.node.muted}>
                     <div className="grid gap-2 rounded-xl border p-2.5" style={{ borderColor: theme.node.stroke }}>
                         <SwitchRow label="生成声音" checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} />
-                        <SeedControl config={config} theme={theme} onConfigChange={onConfigChange} />
+                        <SeedControl config={config} max={isJimeng431 ? 4_294_967_295 : 2_147_483_647} theme={theme} onConfigChange={onConfigChange} />
                     </div>
                 </SettingGroup>
             </div>
@@ -284,14 +310,31 @@ function SwitchRow({ label, checked, theme, onChange }: { label: string; checked
     );
 }
 
-function SeedControl({ config, theme, onConfigChange }: Pick<VideoSettingsPanelProps, "config" | "theme" | "onConfigChange">) {
+function SeedControl({ config, max = 2_147_483_647, theme, onConfigChange }: Pick<VideoSettingsPanelProps, "config" | "theme" | "onConfigChange"> & { max?: number }) {
     const enabled = boolConfig(config.videoSeedEnabled, false);
     return (
         <div className="grid gap-2">
             <SwitchRow label="固定 Seed" checked={enabled} theme={theme} onChange={(checked) => onConfigChange("videoSeedEnabled", String(checked))} />
-            {enabled ? <NumberInput value={config.videoSeed || "0"} min={0} max={2_147_483_647} theme={theme} onChange={(value) => onConfigChange("videoSeed", value)} /> : null}
+            {enabled ? <NumberInput value={config.videoSeed || "0"} min={0} max={max} theme={theme} onChange={(value) => onConfigChange("videoSeed", value)} /> : null}
         </div>
     );
+}
+
+function optionItem(value: string) {
+    return { value, label: value };
+}
+
+function ratioLabel(value: string) {
+    if (value === "16:9") return "横屏";
+    if (value === "9:16") return "竖屏";
+    if (value === "1:1") return "方形";
+    if (value === "4:3") return "标准横屏";
+    if (value === "3:4") return "标准竖屏";
+    return "宽银幕";
+}
+
+function InvalidSettingHint({ children }: { children: ReactNode }) {
+    return <div className="text-xs text-red-500 dark:text-red-400">{children}</div>;
 }
 
 function readSizeDimensions(size: string) {

@@ -90,6 +90,7 @@ import {
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio } from "@/types/media";
 import { isJimeng933VideoConfig } from "@/lib/jimeng933-video";
+import { isJimeng431VideoConfig } from "@/lib/jimeng431-video";
 
 // 内置节点注册到统一注册表(模块加载时执行一次)
 registerBuiltinNodes();
@@ -2241,7 +2242,7 @@ function InfiniteCanvasPage() {
                 return;
             }
             if (mode === "video") {
-                const structureError = validateCanvasVideoStructure(generationContext, isJimeng933VideoConfig(generationConfig), Number(generationConfig.videoSeconds));
+                const structureError = validateCanvasVideoStructure(generationContext, isJimeng933VideoConfig(generationConfig), isJimeng431VideoConfig(generationConfig), Number(generationConfig.videoSeconds));
                 if (structureError) {
                     message.error(structureError);
                     finishGenerationRequest(nodeId, runController);
@@ -2430,7 +2431,7 @@ function InfiniteCanvasPage() {
                 }
 
                 if (mode === "video") {
-                    const spec = nodeSizeFromRatio(generationConfig.size, NODE_DEFAULT_SIZE[CanvasNodeType.Video].width, NODE_DEFAULT_SIZE[CanvasNodeType.Video].height) || NODE_DEFAULT_SIZE[CanvasNodeType.Video];
+                    const spec = nodeSizeFromRatio(generationConfig.videoSize, NODE_DEFAULT_SIZE[CanvasNodeType.Video].width, NODE_DEFAULT_SIZE[CanvasNodeType.Video].height) || NODE_DEFAULT_SIZE[CanvasNodeType.Video];
                     const isEmptyVideoNode = sourceNode?.type === CanvasNodeType.Video && !sourceNode.metadata?.content;
                     const videoId = isEmptyVideoNode ? nodeId : nanoid();
                     const parent = sourceNode?.position || { x: 0, y: 0 };
@@ -2467,6 +2468,7 @@ function InfiniteCanvasPage() {
                         let result: VideoGenerationResult;
                         try {
                             result = await requestVideoGeneration(generationConfig, { prompt: effectivePrompt, seed: readVideoSeed(generationConfig), images: generationContext.referenceImages, videos: generationContext.referenceVideos, audios: generationContext.referenceAudios, imageRoles: generationContext.imageRoles, shots: generationContext.shots }, {
+                                idempotencyKey: nanoid(),
                                 signal: controller.signal,
                                 onReferenceImagesOptimized: (count) => {
                                     message.info(`已自动优化 ${count} 张视频参考图：转为 JPEG，长边压缩至 ${VIDEO_REFERENCE_IMAGE_MAX_EDGE}px 内，以提高视频生成成功率。`);
@@ -2696,11 +2698,12 @@ function InfiniteCanvasPage() {
                 }
                 if (node.type === CanvasNodeType.Video) {
                     if (!context) return;
-                    const structureError = validateCanvasVideoStructure(context, isJimeng933VideoConfig(generationConfig), Number(generationConfig.videoSeconds));
+                    const structureError = validateCanvasVideoStructure(context, isJimeng933VideoConfig(generationConfig), isJimeng431VideoConfig(generationConfig), Number(generationConfig.videoSeconds));
                     if (structureError) throw new Error(structureError);
                     let result: VideoGenerationResult;
                     try {
                         result = await requestVideoGeneration(generationConfig, { prompt, seed: readVideoSeed(generationConfig), images: retryImages, videos: context.referenceVideos, audios: context.referenceAudios, imageRoles: context.imageRoles, shots: context.shots }, {
+                            idempotencyKey: nanoid(),
                             signal: controller.signal,
                             onTaskCreated: (task) => persistRemoteVideoTask(node.id, task),
                             onTaskStateChange: (state) => {
@@ -3424,8 +3427,9 @@ function mediaKindLabel(kind: CanvasMediaKind) {
     return kind === "image" ? "图片" : kind === "video" ? "视频" : "音频";
 }
 
-function validateCanvasVideoStructure(context: NodeGenerationContext, isJimeng933: boolean, duration: number) {
+function validateCanvasVideoStructure(context: NodeGenerationContext, isJimeng933: boolean, isJimeng431: boolean, duration: number) {
     if (context.storyboardError) return context.storyboardError;
+    if (context.shots && isJimeng431) return "431 即梦不支持结构化分镜，请把分镜描述写入提示词";
     if (context.shots && !isJimeng933) return "当前视频渠道不支持结构化分镜，请切换到 933 即梦渠道";
     if (!isJimeng933) return null;
 

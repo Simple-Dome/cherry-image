@@ -12,7 +12,11 @@ describe("readVideoSeed", () => {
     });
 
     test("rejects an invalid enabled Seed", () => {
-        expect(() => readVideoSeed({ videoSeedEnabled: "true", videoSeed: "1.5" })).toThrow("Seed 必须是 0–2147483647 的整数");
+        expect(() => readVideoSeed({ videoSeedEnabled: "true", videoSeed: "1.5" })).toThrow("Seed 必须是 0–4294967295 的整数");
+    });
+
+    test("accepts the 431 unsigned 32-bit maximum", () => {
+        expect(readVideoSeed({ videoSeedEnabled: "true", videoSeed: "4294967295" })).toBe(4_294_967_295);
     });
 });
 
@@ -42,6 +46,13 @@ describe("getVideoPollingPolicy", () => {
 
         const policy = getVideoPollingPolicy(task);
 
+        expect(policy.delayMs).toBe(5000);
+        expect(policy.maxAttempts * policy.delayMs).toBeGreaterThanOrEqual(20 * 60 * 1000);
+    });
+
+    test("uses the long polling window for 431 Jimeng tasks", () => {
+        const task: VideoGenerationTask = { id: "task_jimeng_431", provider: "jimeng431", model: "leonardo-seedance-2.0" };
+        const policy = getVideoPollingPolicy(task);
         expect(policy.delayMs).toBe(5000);
         expect(policy.maxAttempts * policy.delayMs).toBeGreaterThanOrEqual(20 * 60 * 1000);
     });
