@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [新增] 生图工作台首次进入时提示生成期间不要返回、刷新或关闭页面，并支持本次关闭、当天不再显示和 7 天不再显示。
+
 + [调整] 画布生图结果改为先用 Gemini 返回的 data URL 标记成功并立即显示，后台再持久化到 IndexedDB、替换 object URL 和真实尺寸；持久化失败时保留已显示图片。
 + [调整] 支持通过 `VITE_FIXED_API_BASE_URL` 在构建时固定所有渠道的 Base URL，浏览器配置、导入文件和分享 URL 均不能覆盖。
 + [调整] 支持通过 `VITE_BASE` 构建到子路径，可部署到 `gptch.cloud/image/` 并与根路径服务共存。
