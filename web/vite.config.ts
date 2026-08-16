@@ -7,6 +7,7 @@ import { defineConfig, type Plugin } from "vite";
 import { parseChangelog } from "./src/lib/release";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
+const appBase = normalizeBase(process.env.VITE_BASE);
 const localVersion = readFileSync(resolve(webDir, "../VERSION"), "utf8").trim() || "dev";
 const localChangelog = readFileSync(resolve(webDir, "../CHANGELOG.md"), "utf8");
 
@@ -19,7 +20,7 @@ function localPluginsManifest(): Plugin {
             return readdirSync(pluginsDir)
                 .filter((file) => file.endsWith(".js"))
                 .sort()
-                .map((file) => `/plugins/${file}`);
+                .map((file) => `${appBase}plugins/${file}`);
         } catch {
             return [];
         }
@@ -27,7 +28,7 @@ function localPluginsManifest(): Plugin {
     return {
         name: "local-plugins-manifest",
         configureServer(server) {
-            server.middlewares.use("/plugins/index.json", (_req, res) => {
+            server.middlewares.use(`${appBase}plugins/index.json`, (_req, res) => {
                 res.setHeader("Content-Type", "application/json");
                 res.end(JSON.stringify(listLocalPlugins()));
             });
@@ -36,6 +37,11 @@ function localPluginsManifest(): Plugin {
             this.emitFile({ type: "asset", fileName: "plugins/index.json", source: JSON.stringify(listLocalPlugins()) });
         },
     };
+}
+
+function normalizeBase(value: string | undefined) {
+    const path = (value || "/").replace(/^\/+|\/+$/g, "");
+    return path ? `/${path}/` : "/";
 }
 
 export default defineConfig({

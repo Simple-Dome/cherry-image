@@ -7,3 +7,6 @@ export const PLUGIN_REGISTRY_URL = import.meta.env.VITE_PLUGIN_REGISTRY_URL || "
 
 // 431 多模态视频接口要求参考素材使用公网 URL。配置后，浏览器会把本地素材上传到该外部服务。
 export const UPLOAD_BASE = (import.meta.env.VITE_UPLOAD_BASE || "").replace(/\/+$/, "");
+
+// 部署方可在构建时固定所有渠道的上游地址，浏览器配置、导入文件和分享参数都不能覆盖它。
+export const FIXED_API_BASE_URL = (import.meta.env.VITE_FIXED_API_BASE_URL || "").trim().replace(/\/+$/, "");

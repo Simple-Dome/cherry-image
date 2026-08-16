@@ -1,3 +1,4 @@
+import { FIXED_API_BASE_URL } from "@/constant/env";
 import { useMemo } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -70,17 +71,18 @@ const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 const ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const JIMENG933_BASE_URL = "https://gptch.cloud";
 const JIMENG431_BASE_URL = "https://gptch.cloud";
+const DEFAULT_API_BASE_URL = FIXED_API_BASE_URL || OPENAI_BASE_URL;
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
-    baseUrl: OPENAI_BASE_URL,
+    baseUrl: DEFAULT_API_BASE_URL,
     apiKey: "",
     apiFormat: "openai",
     channels: [
         {
             id: "default",
             name: "默认渠道",
-            baseUrl: OPENAI_BASE_URL,
+            baseUrl: DEFAULT_API_BASE_URL,
             apiKey: "",
             apiFormat: "openai",
             models: [
@@ -189,7 +191,17 @@ export function resolveModelScript(config: AiConfig, value: string) {
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const channel = resolveModelChannel(config, model);
-    return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
+    return Boolean(model.trim() && fixedApiBaseUrl(channel.baseUrl) && channel.apiKey.trim());
+}
+
+export function fixedApiBaseUrl(baseUrl: string) {
+    return FIXED_API_BASE_URL || baseUrl.trim();
+}
+
+export function applyFixedApiBaseUrl(config: AiConfig): AiConfig {
+    if (!FIXED_API_BASE_URL) return config;
+    const channels = config.channels.map((channel) => (channel.baseUrl === FIXED_API_BASE_URL ? channel : { ...channel, baseUrl: FIXED_API_BASE_URL }));
+    return config.baseUrl === FIXED_API_BASE_URL && channels.every((channel, index) => channel === config.channels[index]) ? config : { ...config, baseUrl: FIXED_API_BASE_URL, channels };
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -202,10 +214,10 @@ export const useConfigStore = create<ConfigStore>()(
             shouldPromptContinue: false,
             updateConfig: (key, value) =>
                 set((state) => ({
-                    config: {
+                    config: applyFixedApiBaseUrl({
                         ...state.config,
                         [key]: value,
-                    },
+                    }),
                 })),
             updateWebdavConfig: (key, value) =>
                 set((state) => ({
@@ -232,7 +244,7 @@ export const useConfigStore = create<ConfigStore>()(
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
                 const persistedWebdav = (persistedState.webdav || {}) as Partial<WebdavSyncConfig>;
-                const config = { ...defaultConfig, ...persistedConfig };
+                const config = applyFixedApiBaseUrl({ ...defaultConfig, ...persistedConfig });
                 if (!Array.isArray(persistedConfig.channels)) config.channels = [];
                 const channels = normalizeChannels(config);
                 const models = modelOptionsFromChannels(channels);
@@ -271,7 +283,7 @@ export const useConfigStore = create<ConfigStore>()(
 
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
-    return useMemo(() => ({ ...config, channelMode: "local" as const }), [config]);
+    return useMemo(() => ({ ...applyFixedApiBaseUrl(config), channelMode: "local" as const }), [config]);
 }
 
 /** Normalize a mixed list of raw model names or model objects into deduped ChannelModel entries. */
@@ -294,7 +306,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
     return {
         id: channel?.id?.trim() || nanoid(),
         name: channel?.name?.trim() || "新渠道",
-        baseUrl: channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
+        baseUrl: fixedApiBaseUrl(channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat)),
         apiKey: channel?.apiKey || "",
         apiFormat,
         models: normalizeChannelModels(channel?.models),
@@ -354,7 +366,7 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     return {
         ...config,
         model: modelOptionName(value || config.model),
-        baseUrl: channel.baseUrl,
+        baseUrl: fixedApiBaseUrl(channel.baseUrl),
         apiKey: channel.apiKey,
         apiFormat: channel.apiFormat,
     };
@@ -386,6 +398,7 @@ function normalizeChannels(config: AiConfig) {
 }
 
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
+    if (FIXED_API_BASE_URL) return FIXED_API_BASE_URL;
     if (apiFormat === "gemini") return GEMINI_BASE_URL;
     if (apiFormat === "ark") return ARK_BASE_URL;
     if (apiFormat === "jimeng933") return JIMENG933_BASE_URL;

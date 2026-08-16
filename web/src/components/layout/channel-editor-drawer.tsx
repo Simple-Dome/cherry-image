@@ -1,7 +1,8 @@
 import { Button, Drawer, Input, Segmented, Select, Space } from "antd";
-import { ListPlus, Trash2 } from "lucide-react";
+import { LockKeyhole, ListPlus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { FIXED_API_BASE_URL } from "@/constant/env";
 import { defaultBaseUrlForApiFormat, guessCapability, normalizeChannelModels, type ApiCallFormat, type ChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
@@ -35,10 +36,11 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     if (!draft) return null;
 
     const patch = (value: Partial<ModelChannel>) => setDraft((current) => (current ? { ...current, ...value } : current));
+    const apiBaseLocked = Boolean(FIXED_API_BASE_URL);
     const setModels = (models: ChannelModel[]) => patch({ models });
 
     const changeApiFormat = (apiFormat: ApiCallFormat) => {
-        const baseUrl = !draft.baseUrl.trim() || draft.baseUrl.trim() === defaultBaseUrlForApiFormat(draft.apiFormat) ? defaultBaseUrlForApiFormat(apiFormat) : draft.baseUrl;
+        const baseUrl = FIXED_API_BASE_URL || (!draft.baseUrl.trim() || draft.baseUrl.trim() === defaultBaseUrlForApiFormat(draft.apiFormat) ? defaultBaseUrlForApiFormat(apiFormat) : draft.baseUrl);
         const models = apiFormat === "jimeng431" ? draft.models.filter((model) => model.name === "leonardo-seedance-2.0" || model.name === "leonardo-seedance-2.0-fast").map((model) => ({ ...model, capability: "video" as const })) : draft.models;
         patch({ apiFormat, baseUrl, models });
     };
@@ -54,7 +56,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
 
     const save = () => {
         const models = normalizeChannelModels(draft.models).filter((model) => draft.apiFormat !== "jimeng431" || model.name === "leonardo-seedance-2.0" || model.name === "leonardo-seedance-2.0-fast").map((model) => draft.apiFormat === "jimeng431" ? { ...model, capability: "video" as const } : model);
-        onSave({ ...draft, name: draft.name.trim() || "未命名渠道", models });
+        onSave({ ...draft, baseUrl: FIXED_API_BASE_URL || draft.baseUrl.trim(), name: draft.name.trim() || "未命名渠道", models });
         onClose();
     };
 
@@ -84,8 +86,9 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <Select className="w-full" value={draft.apiFormat} options={apiFormatOptions} onChange={changeApiFormat} />
                 </label>
                 <label className="block md:col-span-2">
-                    <span className="mb-1 block text-sm font-medium">接口地址</span>
-                    <Input value={draft.baseUrl} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder="https://api.example.com" />
+                    <span className="mb-1 block text-sm font-medium">接口地址{apiBaseLocked ? "（已固定）" : ""}</span>
+                    <Input value={FIXED_API_BASE_URL || draft.baseUrl} disabled={apiBaseLocked} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder="https://api.example.com" />
+                    {apiBaseLocked ? <span className="mt-1 flex items-center gap-1 text-xs text-stone-500"><LockKeyhole className="size-3" />当前部署固定使用 {FIXED_API_BASE_URL}</span> : null}
                 </label>
                 <label className="block md:col-span-2">
                     <span className="mb-1 block text-sm font-medium">API Key</span>

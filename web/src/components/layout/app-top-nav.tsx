@@ -12,6 +12,7 @@ import { useAgentStore } from "@/stores/use-agent-store";
 
 export function AppTopNav() {
     const { pathname } = useLocation();
+    const logoUrl = `${import.meta.env.BASE_URL}logo.svg`;
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const autoConnectRef = useRef(false);
     const agentToken = useAgentStore((state) => state.token);
@@ -40,8 +41,8 @@ export function AppTopNav() {
                                 <span
                                     className="size-5 shrink-0 bg-current"
                                     style={{
-                                        mask: "url(/logo.svg) center / contain no-repeat",
-                                        WebkitMask: "url(/logo.svg) center / contain no-repeat",
+                                        mask: `url(${logoUrl}) center / contain no-repeat`,
+                                        WebkitMask: `url(${logoUrl}) center / contain no-repeat`,
                                     }}
                                 />
                                 <span className="text-base font-medium">无限画布</span>

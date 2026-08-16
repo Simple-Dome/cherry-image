@@ -1,6 +1,6 @@
 import { saveAs } from "file-saver";
 
-import { useConfigStore, type AiConfig, type WebdavSyncConfig } from "@/stores/use-config-store";
+import { applyFixedApiBaseUrl, useConfigStore, type AiConfig, type WebdavSyncConfig } from "@/stores/use-config-store";
 import { usePromptSourceStore, type PromptSourceSchedule } from "@/stores/use-prompt-source-store";
 import type { PromptSource } from "@/services/api/prompt-source-presets";
 
@@ -31,6 +31,6 @@ export async function importAppConfig(file: File) {
         throw new Error("配置文件格式不正确");
     }
     if (data.app !== "infinite-canvas" || data.version !== 1 || !data.config || !data.webdav || !data.promptSources) throw new Error("配置文件格式不正确");
-    useConfigStore.setState({ config: data.config, webdav: data.webdav });
+    useConfigStore.setState({ config: applyFixedApiBaseUrl(data.config), webdav: data.webdav });
     usePromptSourceStore.setState(data.promptSources);
 }

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { App } from "antd";
 
+import { FIXED_API_BASE_URL } from "@/constant/env";
 import { createModelChannel, useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
 
@@ -18,6 +19,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         if (handledConfigParams.current) return;
         const searchParams = new URLSearchParams(window.location.search);
         const baseUrl = searchParams.get("baseUrl") || searchParams.get("baseurl");
+        const importedBaseUrl = FIXED_API_BASE_URL ? "" : baseUrl;
         const apiKey = searchParams.get("apiKey") || searchParams.get("apikey");
         if (!baseUrl && !apiKey) return;
         handledConfigParams.current = true;
@@ -34,17 +36,17 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
                       index === 0
                           ? {
                                 ...channel,
-                                ...(baseUrl ? { baseUrl } : {}),
+                                ...(importedBaseUrl ? { baseUrl: importedBaseUrl } : {}),
                                 ...(apiKey ? { apiKey } : {}),
                             }
                           : channel,
                   )
-                : [createModelChannel({ id: "default", name: "默认渠道", baseUrl: baseUrl || undefined, apiKey: apiKey || "" })],
+                : [createModelChannel({ id: "default", name: "默认渠道", baseUrl: importedBaseUrl || undefined, apiKey: apiKey || "" })],
         );
-        if (baseUrl) updateConfig("baseUrl", baseUrl);
+        if (importedBaseUrl) updateConfig("baseUrl", importedBaseUrl);
         if (apiKey) updateConfig("apiKey", apiKey);
         openConfigDialog(false);
-        message.success("已导入本地直连配置");
+        message.success(importedBaseUrl || apiKey ? "已导入本地直连配置" : "接口地址已由当前部署固定");
     }, [config.channels, message, openConfigDialog, updateConfig]);
 
     return <>{children}</>;

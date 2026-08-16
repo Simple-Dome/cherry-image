@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, CalendarDays, CalendarRange, Check, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
@@ -63,8 +63,44 @@ type GenerationLogConfig = Pick<AiConfig, "model" | "imageModel" | "quality" | "
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
+const IMAGE_GENERATION_WARNING_STORAGE_KEY = "infinite-canvas:image-generation-warning:v1";
 const RESULT_ACTION_BUTTON_CLASS = "min-w-0 px-1.5 [&_.ant-btn-icon]:shrink-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate";
 const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
+
+type ImageGenerationWarningDismissal = {
+    suppressUntil: number;
+};
+
+function shouldShowImageGenerationWarning() {
+    try {
+        const raw = window.localStorage.getItem(IMAGE_GENERATION_WARNING_STORAGE_KEY);
+        if (!raw) return true;
+        const parsed = JSON.parse(raw) as Partial<ImageGenerationWarningDismissal>;
+        if (typeof parsed.suppressUntil !== "number" || parsed.suppressUntil <= Date.now()) {
+            window.localStorage.removeItem(IMAGE_GENERATION_WARNING_STORAGE_KEY);
+            return true;
+        }
+        return false;
+    } catch {
+        return true;
+    }
+}
+
+function startOfNextLocalDay() {
+    const nextDay = new Date();
+    nextDay.setHours(24, 0, 0, 0);
+    return nextDay.getTime();
+}
+
+function saveImageGenerationWarningDismissal(mode: "day" | "week") {
+    const suppressUntil = mode === "day" ? startOfNextLocalDay() : Date.now() + 7 * 24 * 60 * 60 * 1000;
+    try {
+        window.localStorage.setItem(IMAGE_GENERATION_WARNING_STORAGE_KEY, JSON.stringify({ suppressUntil } satisfies ImageGenerationWarningDismissal));
+    } catch {
+        // 浏览器禁用本地存储时仍允许本次关闭提示。
+    }
+}
+
 
 export default function ImagePage() {
     const { message } = App.useApp();
@@ -90,6 +126,7 @@ export default function ImagePage() {
     const [selectedLogIds, setSelectedLogIds] = useState<string[]>([]);
     const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+    const [imageGenerationWarningOpen, setImageGenerationWarningOpen] = useState(false);
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
     const [autoRunToken, setAutoRunToken] = useState(0);
     const imageCommand = useWorkbenchAgentStore((state) => state.imageCommand);
@@ -109,8 +146,14 @@ export default function ImagePage() {
     }, [running, startedAt]);
 
     useEffect(() => {
+        setImageGenerationWarningOpen(shouldShowImageGenerationWarning());
         void refreshLogs();
     }, []);
+
+    const dismissImageGenerationWarning = (mode: "session" | "day" | "week") => {
+        if (mode !== "session") saveImageGenerationWarningDismissal(mode);
+        setImageGenerationWarningOpen(false);
+    };
 
     const addReferences = async (files?: FileList | null) => {
         const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
@@ -555,6 +598,41 @@ export default function ImagePage() {
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
             <Modal title="删除生成记录" open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
                 确定删除选中的 {selectedLogIds.length} 条生成记录吗？
+            </Modal>
+            <Modal
+                open={imageGenerationWarningOpen}
+                centered
+                width={520}
+                title={
+                    <div className="flex items-start gap-3 pr-6">
+                        <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
+                            <TriangleAlert className="size-5" />
+                        </span>
+                        <div>
+                            <div className="text-base font-semibold">生图期间请保持页面稳定</div>
+                            <div className="mt-1 text-xs font-normal text-stone-500 dark:text-stone-400">开始生成前请先确认以下风险</div>
+                        </div>
+                    </div>
+                }
+                onCancel={() => dismissImageGenerationWarning("session")}
+                footer={
+                    <div className="flex flex-wrap justify-end gap-2">
+                        <Button icon={<Check className="size-3.5" />} onClick={() => dismissImageGenerationWarning("session")}>
+                            已了解
+                        </Button>
+                        <Button icon={<CalendarDays className="size-3.5" />} onClick={() => dismissImageGenerationWarning("day")}>
+                            当天不再显示
+                        </Button>
+                        <Button type="primary" icon={<CalendarRange className="size-3.5" />} onClick={() => dismissImageGenerationWarning("week")}>
+                            7天不再显示
+                        </Button>
+                    </div>
+                }
+            >
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3.5 text-sm leading-6 text-amber-950 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-100">
+                    <p>生成图片期间，请不要返回、刷新或关闭页面。</p>
+                    <p className="mt-2">当前生成流程不提供回退或刷新恢复，这些操作可能导致生成失败，相关后果需自行承担。</p>
+                </div>
             </Modal>
         </div>
     );
