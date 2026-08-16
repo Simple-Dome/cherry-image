@@ -72,41 +72,34 @@ VITE_FIXED_API_BASE_URL=https://gptch.cloud \
 
 `VITE_FIXED_API_BASE_URL` 是 Vite 构建期变量，不能通过 `docker run -e` 或发布镜像的 Compose 文件在容器启动后修改；变更地址需要重新构建镜像。
 
-## 部署到 gptch.cloud/image/
+## gptch.cloud/image/ 发布准备
 
-主站根路径仍由 New API 使用时，构建 Image 镜像需同时指定子路径与固定上游地址：
+`gptch.cloud` 的根路径、`/v1` 和 `/api` 由 New API 持有。`/image/`、`/canvas/` 与 `/canvas-uploads/` 必须作为同一次完整蓝绿发布处理，不能通过生产机上的 `docker build`、直接 `docker run` 或手工改 Nginx 单独替换。
+
+当前仓库是 Image parent，Canvas 源码固定为 `vendor/infinite-canvas` gitlink。先准备完整、已推送的 source pair：
 
 ```bash
-docker build \
-  --build-arg VITE_BASE=/image/ \
-  --build-arg VITE_FIXED_API_BASE_URL=https://gptch.cloud \
-  -t infinite-canvas:image .
+git submodule update --init --recursive
+SOURCE_REF="$(git rev-parse HEAD)"
+TASK_ID="gptch-image-${SOURCE_REF:0:12}"
 
-docker run -d \
-  --name infinite-canvas \
-  --restart unless-stopped \
-  -p 127.0.0.1:3300:3000 \
-  infinite-canvas:image
+scripts/deploy/release-control.sh prepare-worktree \
+  --task-id "$TASK_ID" \
+  --domain gptch.cloud \
+  --source-ref "$SOURCE_REF"
+
+scripts/deploy/release-control.sh dry-run \
+  --task-id "$TASK_ID" \
+  --phase local-preparation
+
+scripts/deploy/release-control.sh prepare-composite \
+  --task-id "$TASK_ID" \
+  --domain gptch.cloud
 ```
 
-在 `gptch.cloud` 的 HTTPS server block 中、根路径 `location /` 之前加入：
+控制脚本会创建隔离 detached worktree，校验 parent commit 与 Canvas gitlink 完全一致，并在 `.release-artifacts/` 生成包含子模块源码的 composite archive。它不构建镜像、不连接生产机、不启动容器，也不改 Nginx。
 
-```nginx
-location = /image {
-    return 301 /image/;
-}
-
-location ^~ /image/ {
-    proxy_pass http://127.0.0.1:3300/;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
-
-`proxy_pass` 必须保留结尾的 `/`，这样浏览器访问 `/image/assets/...`、`/image/config.js` 或任意画布路由时，容器内部会收到对应的根路径请求。修改后执行 `nginx -t && systemctl reload nginx`，再访问 `https://gptch.cloud/image/` 验证。
+只有 gptch.cloud profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 archive 传给 `newapi-16` 构建 `linux/amd64` Shell、Canvas 及计划变更的 uploads edge 镜像。必须记录 commit、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
 
 ## 统计分析（可选）
 

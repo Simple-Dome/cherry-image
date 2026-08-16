@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [新增] 当前仓库作为 gptch.cloud Image parent 固定 Canvas gitlink，并提供隔离 source-pair 与 composite archive 发布准备控制脚本。
+
 + [新增] 生图工作台首次进入时提示生成期间不要返回、刷新或关闭页面，并支持本次关闭、当天不再显示和 7 天不再显示。
 
 + [调整] 画布生图结果改为先用 Gemini 返回的 data URL 标记成功并立即显示，后台再持久化到 IndexedDB、替换 object URL 和真实尺寸；持久化失败时保留已显示图片。

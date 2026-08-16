@@ -1,0 +1,4 @@
+[submodule "vendor/infinite-canvas"]
+	path = vendor/infinite-canvas
+	url = git@github.com:eve1329/infinite-canvas.git
+	branch = codex/canvas-operation-manual-repair
