@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -18,6 +18,11 @@ type InfiniteCanvasProps = {
 };
 
 const INTERACTIVE_WHEEL_SELECTOR = "[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown";
+const CanvasViewportContext = createContext<ViewportTransform>({ x: 0, y: 0, k: 1 });
+
+export function useCanvasViewport() {
+    return useContext(CanvasViewportContext);
+}
 
 function shouldPreventCanvasWheelDefault(target: EventTarget | null) {
     return !(target instanceof Element && target.closest(INTERACTIVE_WHEEL_SELECTOR));
@@ -193,14 +198,16 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
             onDrop={onDrop}
         >
             <CanvasGrid viewport={viewport} mode={backgroundMode} />
-            <div
-                className="absolute origin-top-left"
-                style={{
-                    transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.k})`,
-                }}
-            >
-                {children}
-            </div>
+            <CanvasViewportContext.Provider value={viewport}>
+                <div
+                    className="absolute origin-top-left"
+                    style={{
+                        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.k})`,
+                    }}
+                >
+                    {children}
+                </div>
+            </CanvasViewportContext.Provider>
         </div>
     );
 }

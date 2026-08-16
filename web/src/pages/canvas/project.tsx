@@ -265,6 +265,7 @@ function InfiniteCanvasPage() {
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
+    const [expandedEditorNodeId, setExpandedEditorNodeId] = useState<string | null>(null);
     const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
     const [editRequestNonce, setEditRequestNonce] = useState(0);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
@@ -460,6 +461,12 @@ function InfiniteCanvasPage() {
     useEffect(() => {
         if (!dialogNodeId) setNodeImageSettingsOpen(false);
     }, [dialogNodeId]);
+
+    useEffect(() => {
+        if (!expandedEditorNodeId) return;
+        const expandedNode = nodes.find((node) => node.id === expandedEditorNodeId);
+        if (!expandedNode || (expandedNode.type !== CanvasNodeType.Config && dialogNodeId !== expandedEditorNodeId)) setExpandedEditorNodeId(null);
+    }, [dialogNodeId, expandedEditorNodeId, nodes]);
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -736,10 +743,10 @@ function InfiniteCanvasPage() {
         return { nodeIds, connectionIds };
     }, [activeNodeId, connections]);
 
-    const configInputsById = useMemo(() => {
+    const generationInputsByNodeId = useMemo(() => {
         const map = new Map<string, NodeGenerationInput[]>();
         nodes.forEach((node) => {
-            if (node.type !== CanvasNodeType.Config) return;
+            if (![CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Text, CanvasNodeType.Audio, CanvasNodeType.Config].includes(node.type as CanvasNodeType)) return;
             map.set(node.id, buildNodeGenerationInputs(node.id, nodes, connections));
         });
         return map;
@@ -2934,7 +2941,7 @@ function InfiniteCanvasPage() {
             ) : panelNode.type === CanvasNodeType.Config ? (
                 <CanvasConfigComposer
                     value={panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? ""}
-                    inputs={configInputsById.get(panelNode.id) || []}
+                    inputs={generationInputsByNodeId.get(panelNode.id) || []}
                     onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent })}
                     onClose={() => setDialogNodeId(null)}
                 />
@@ -2943,6 +2950,9 @@ function InfiniteCanvasPage() {
                     node={panelNode}
                     isRunning={runningNodeId === panelNode.id}
                     mentionReferences={mentionReferencesByNodeId.get(panelNode.id) || EMPTY_REFERENCES}
+                    inputs={generationInputsByNodeId.get(panelNode.id) || []}
+                    expanded={expandedEditorNodeId === panelNode.id}
+                    onExpandedChange={(expanded) => setExpandedEditorNodeId(expanded ? panelNode.id : null)}
                     videoStructure={videoStructureByNodeId.get(panelNode.id)}
                     onPromptChange={handleNodePromptChange}
                     onConfigChange={handleConfigNodeChange}
@@ -2955,7 +2965,7 @@ function InfiniteCanvasPage() {
                     }}
                 />
             ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, renderPluginPanel, runningNodeId, videoStructureByNodeId],
+        [confirmStopGeneration, expandedEditorNodeId, generationInputsByNodeId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, renderPluginPanel, runningNodeId, videoStructureByNodeId],
     );
 
     const renderNodeContentPanel = useCallback(
@@ -2963,7 +2973,15 @@ function InfiniteCanvasPage() {
             <CanvasConfigNodePanel
                 node={contentNode}
                 isRunning={runningNodeId === contentNode.id}
-                inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
+                inputSummary={getInputSummary(generationInputsByNodeId.get(contentNode.id) || [])}
+                inputs={generationInputsByNodeId.get(contentNode.id) || []}
+                composerValue={contentNode.metadata?.composerContent ?? contentNode.metadata?.prompt ?? ""}
+                onComposerChange={(composerContent) => handleConfigNodeChange(contentNode.id, { composerContent })}
+                expanded={expandedEditorNodeId === contentNode.id}
+                onExpandedChange={(expanded) => {
+                    setExpandedEditorNodeId(expanded ? contentNode.id : null);
+                    if (expanded) setDialogNodeId(null);
+                }}
                 videoStructure={videoStructureByNodeId.get(contentNode.id)}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
@@ -2974,7 +2992,7 @@ function InfiniteCanvasPage() {
                 }}
             />
         ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId, videoStructureByNodeId],
+        [confirmStopGeneration, expandedEditorNodeId, generationInputsByNodeId, handleConfigNodeChange, handleGenerateNode, runningNodeId, videoStructureByNodeId],
     );
 
     if (!projectLoaded) return <CanvasRefreshShell />;

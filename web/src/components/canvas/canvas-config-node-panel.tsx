@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
-import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
-import { Button, Segmented } from "antd";
+import { Image as ImageIcon, LoaderCircle, Maximize2, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
+import { Button, Segmented, Tooltip } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
 import { isJimeng933FastVideoModel, normalizeVideoResolutionValue } from "@/components/video-settings-panel";
@@ -12,7 +12,9 @@ import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
-import type { NodeGenerationContext } from "./canvas-node-generation";
+import type { NodeGenerationContext, NodeGenerationInput } from "./canvas-node-generation";
+import { CanvasConfigComposer } from "./canvas-config-composer";
+import { CanvasExpandedGenerationPanel } from "./canvas-expanded-generation-panel";
 
 type CanvasConfigNodePanelProps = {
     node: CanvasNodeData;
@@ -23,9 +25,14 @@ type CanvasConfigNodePanelProps = {
     onGenerate: (nodeId: string) => void;
     onStop: (nodeId: string) => void;
     onComposerToggle: () => void;
+    inputs: NodeGenerationInput[];
+    composerValue: string;
+    onComposerChange: (value: string) => void;
+    expanded?: boolean;
+    onExpandedChange?: (expanded: boolean) => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoStructure, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoStructure, onConfigChange, onGenerate, onStop, onComposerToggle, inputs, composerValue, onComposerChange, expanded = false, onExpandedChange }: CanvasConfigNodePanelProps) {
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -41,11 +48,16 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoStru
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
     const canGenerate = hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput || (mode === "video" && Boolean(videoStructure?.shots?.length)));
 
-    return (
-        <div className="flex h-full w-full cursor-move flex-col px-3 pb-3 pt-7 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
-            <div className="mb-2 flex items-center justify-between gap-3">
+    const panel = (
+        <div className={expanded ? "flex h-full min-h-0 w-full flex-col text-sm" : "flex h-full w-full cursor-move flex-col px-3 pb-3 pt-7 text-sm"} style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+            <div className={`mb-2 flex shrink-0 items-center justify-between gap-3 ${expanded ? "pr-12" : ""}`}>
                 <div className="shrink-0 text-sm font-semibold">生成配置</div>
-                <div className="cursor-default" onMouseDown={(event) => event.stopPropagation()}>
+                <div className="ml-auto flex cursor-default items-center gap-1" onMouseDown={(event) => event.stopPropagation()}>
+                    {!expanded ? (
+                        <Tooltip title="展开编辑面板">
+                            <Button type="text" className="!grid !size-8 !min-w-8 !place-items-center !rounded-lg !p-0" icon={<Maximize2 className="size-3.5" />} onClick={() => onExpandedChange?.(true)} aria-label="展开编辑面板" />
+                        </Tooltip>
+                    ) : null}
                     <Segmented
                         size="small"
                         className="canvas-config-mode !rounded-md !p-0.5"
@@ -93,7 +105,9 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoStru
                 </div>
             </div>
 
-            <div className="mb-2 flex flex-wrap gap-1.5">
+            {expanded ? <CanvasConfigComposer value={composerValue} inputs={inputs} onChange={onComposerChange} variant="embedded" /> : null}
+
+            <div className="mb-2 flex shrink-0 flex-wrap gap-1.5">
                 <InputChip label="提示词" value={`${inputSummary.textCount} 个`} style={chipStyle} />
                 <InputChip label="参考图" value={`${inputSummary.imageCount} 张`} style={chipStyle} />
                 <InputChip label="参考视频" value={`${inputSummary.videoCount} 个`} style={chipStyle} />
@@ -101,16 +115,18 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoStru
                 {mode === "video" && videoStructure?.storyboardCount ? <InputChip label="分镜" value={`${videoStructure.shots?.length || 0} 镜 / ${videoStructure.storyboardDuration} 秒`} style={storyboardMismatch || videoStructure.storyboardError ? conflictChipStyle : chipStyle} /> : null}
                 {mode === "video" && firstFrameCount ? <InputChip label="首帧" value={`${firstFrameCount} 张`} style={firstFrameCount > 1 ? conflictChipStyle : chipStyle} /> : null}
                 {mode === "video" && lastFrameCount ? <InputChip label="尾帧" value={`${lastFrameCount} 张`} style={lastFrameCount > 1 ? conflictChipStyle : chipStyle} /> : null}
-                <button type="button" className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px]" style={chipStyle} onMouseDown={(event) => event.stopPropagation()} onClick={onComposerToggle}>
-                    <Settings2 className="size-3.5" />
-                    组装提示词
-                </button>
+                {!expanded ? (
+                    <button type="button" className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px]" style={chipStyle} onMouseDown={(event) => event.stopPropagation()} onClick={onComposerToggle}>
+                        <Settings2 className="size-3.5" />
+                        组装提示词
+                    </button>
+                ) : null}
             </div>
 
             <div className="mb-2 grid min-w-0 cursor-default grid-cols-[minmax(0,1fr)_148px] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
                 <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model, ...(mode === "video" && isJimeng933FastVideoModel(config, model) && normalizeVideoResolutionValue(config.vquality) === "1080" ? { vquality: "720" } : {}) })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
                 {mode === "video" ? (
-                    <CanvasVideoSettingsPopover config={config} model={config.model} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                    <CanvasVideoSettingsPopover config={config} model={config.model} scaleOverride={expanded ? 1 : undefined} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                 ) : mode === "image" ? (
                     <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
                 ) : mode === "audio" ? (
@@ -145,6 +161,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoStru
             </Button>
         </div>
     );
+
+    return expanded ? <CanvasExpandedGenerationPanel title={node.title || "生成配置"} onClose={() => onExpandedChange?.(false)}>{panel}</CanvasExpandedGenerationPanel> : panel;
 }
 
 function InputChip({ label, value, style }: { label: string; value: string; style: CSSProperties }) {

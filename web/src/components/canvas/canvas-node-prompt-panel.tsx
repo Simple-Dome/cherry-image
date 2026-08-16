@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ArrowUp, LoaderCircle, Square, Volume2 } from "lucide-react";
-import { Button, Switch } from "antd";
+import { ArrowUp, LoaderCircle, Maximize2, Square, Volume2 } from "lucide-react";
+import { Button, Switch, Tooltip } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
 import { isJimeng933FastVideoModel, normalizeVideoResolutionValue } from "@/components/video-settings-panel";
@@ -17,7 +17,10 @@ import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData } from "@/types/canvas";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import type { NodeGenerationContext } from "./canvas-node-generation";
+import type { NodeGenerationInput } from "./canvas-node-generation";
 import { isJimeng933VideoConfig } from "@/lib/jimeng933-video";
+import { CanvasExpandedGenerationPanel } from "./canvas-expanded-generation-panel";
+import { CanvasReferenceThumbnailStrip } from "./canvas-reference-thumbnail-strip";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
 
@@ -32,9 +35,12 @@ type CanvasNodePromptPanelProps = {
     onImageSettingsOpenChange?: (open: boolean) => void;
     modeOverride?: CanvasNodeGenerationMode; // 插件节点用 useBuiltinPanel.mode 指定生成类型
     videoStructure?: NodeGenerationContext;
+    inputs?: NodeGenerationInput[];
+    expanded?: boolean;
+    onExpandedChange?: (expanded: boolean) => void;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, modeOverride, videoStructure }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, modeOverride, videoStructure, inputs = [], expanded = false, onExpandedChange }: CanvasNodePromptPanelProps) {
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -64,28 +70,35 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     };
     const changeVideoModel = (model: string) => onConfigChange(node.id, { model, ...(isJimeng933FastVideoModel(config, model) && normalizeVideoResolutionValue(config.vquality) === "1080" ? { vquality: "720" } : {}) });
 
-    return (
+    const panel = (
         <div
             data-canvas-no-zoom
-            className="rounded-2xl border p-3 shadow-2xl backdrop-blur"
+            className={expanded ? "flex h-full min-h-0 flex-col" : "relative rounded-2xl border p-3 shadow-2xl backdrop-blur"}
             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             onWheel={(event) => event.stopPropagation()}
         >
+            {!expanded ? (
+                <Tooltip title="展开编辑面板">
+                    <Button type="text" className="!absolute !right-2 !top-2 !z-20 !grid !size-8 !min-w-8 !place-items-center !rounded-lg !p-0" icon={<Maximize2 className="size-3.5" />} onClick={() => onExpandedChange?.(true)} aria-label="展开编辑面板" />
+                </Tooltip>
+            ) : null}
+            <CanvasReferenceThumbnailStrip inputs={inputs} expanded={expanded} />
             <CanvasPromptChipInput
                 value={prompt}
                 references={mentionReferences}
                 onChange={updatePrompt}
                 onSubmit={submit}
-                className="thin-scrollbar h-40 w-full cursor-text resize-none rounded-xl px-3 py-2 text-sm leading-5 outline-none"
+                fill={expanded}
+                className={expanded ? "thin-scrollbar h-full min-h-0 w-full cursor-text rounded-xl px-3 py-2 text-sm leading-5 outline-none" : "thin-scrollbar h-40 w-full cursor-text resize-none rounded-xl px-3 py-2 pr-10 text-sm leading-5 outline-none"}
                 style={{ background: "transparent", color: theme.node.text }}
                 placeholder={promptPlaceholder(mode, hasImageContent, hasTextContent)}
             />
 
             {mode === "video" && videoStructure ? <VideoStructureSummary context={videoStructure} duration={Number(config.videoSeconds)} supported={isJimeng933VideoConfig(config)} theme={theme} /> : null}
 
-            <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
+            <div className="mt-2 flex min-w-0 shrink-0 items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                     <CanvasPromptLibrary onSelect={updatePrompt} />
                     {mode === "image" ? (
@@ -103,7 +116,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     ) : mode === "video" ? (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={changeVideoModel} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
-                            <CanvasVideoSettingsPopover config={config} model={config.model} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                            <CanvasVideoSettingsPopover config={config} model={config.model} scaleOverride={expanded ? 1 : undefined} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                             <label className="flex h-10 shrink-0 cursor-pointer items-center gap-1.5 px-1 text-xs" style={{ color: theme.node.muted }} title="是否让视频模型生成声音">
                                 <Volume2 className="size-3.5" />
                                 <span>声音</span>
@@ -145,6 +158,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
             </div>
         </div>
     );
+
+    return expanded ? <CanvasExpandedGenerationPanel title={node.title || "节点"} onClose={() => onExpandedChange?.(false)}>{panel}</CanvasExpandedGenerationPanel> : panel;
 }
 
 function VideoStructureSummary({ context, duration, supported, theme }: { context: NodeGenerationContext; duration: number; supported: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
