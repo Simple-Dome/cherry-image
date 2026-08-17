@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RELEASE_WORKTREE_ROOT="${RELEASE_WORKTREE_ROOT:-$REPO_ROOT/.release-worktrees}"
 RELEASE_ARTIFACT_ROOT="${RELEASE_ARTIFACT_ROOT:-$REPO_ROOT/.release-artifacts}"
 STATE_ROOT="${RELEASE_STATE_ROOT:-$REPO_ROOT/.agents/state/tasks}"
-PUBLIC_DOMAIN="gptch.cloud"
+PUBLIC_DOMAIN="artworkers.online"
 CANVAS_PATH="vendor/infinite-canvas"
 
 TASK_ID=""
@@ -22,8 +22,8 @@ die() {
 usage() {
     cat <<'EOF'
 Usage:
-  scripts/deploy/release-control.sh prepare-worktree --task-id <id> --domain gptch.cloud --source-ref <40-char-sha>
-  scripts/deploy/release-control.sh prepare-composite --task-id <id> --domain gptch.cloud
+  scripts/deploy/release-control.sh prepare-worktree --task-id <id> --domain artworkers.online --source-ref <40-char-sha>
+  scripts/deploy/release-control.sh prepare-composite --task-id <id> --domain artworkers.online
   scripts/deploy/release-control.sh dry-run --task-id <id> --phase local-preparation
 
 This controller only prepares local source evidence. It never builds images,
@@ -117,9 +117,9 @@ canvas_gitlink_sha() {
 
 assert_canvas_openai_base() {
     local canvas_dir="$1" matches count
-    matches="$(grep -R --include='*.ts' --include='*.tsx' --exclude-dir=.git -nE '^[[:space:]]*const OPENAI_BASE_URL = "https://gptch\.cloud";[[:space:]]*$' "$canvas_dir" || true)"
+    matches="$(grep -R --include='*.ts' --include='*.tsx' --exclude-dir=.git -nE '^[[:space:]]*const OPENAI_BASE_URL = "https://artworkers\.online";[[:space:]]*$' "$canvas_dir" || true)"
     count="$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')"
-    [ "$count" = "1" ] || die "Canvas source must contain exactly one static OPENAI_BASE_URL = https://gptch.cloud"
+    [ "$count" = "1" ] || die "Canvas source must contain exactly one static OPENAI_BASE_URL = https://artworkers.online"
 }
 
 assert_prepared_pair() {
@@ -147,13 +147,13 @@ write_manifest() {
     [ -f "$archive" ] && archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
     mkdir -p "$(task_state_dir)"
     cat >"$(manifest_path)" <<EOF
-# gptch.cloud Image Release Manifest
+# artworkers.online Image Release Manifest
 
 ## Source
 - Domain: $PUBLIC_DOMAIN
 - Parent Commit: $parent_sha
 - Canvas Gitlink Commit: $canvas_sha
-- Canvas OPENAI_BASE_URL: https://gptch.cloud
+- Canvas OPENAI_BASE_URL: https://artworkers.online
 - Worktree: $worktree
 - Shell Dockerfile SHA-256: $shell_dockerfile_sha
 - Canvas Dockerfile SHA-256: $canvas_dockerfile_sha
@@ -164,7 +164,7 @@ write_manifest() {
 
 ## Profile
 - Status: unverified; fresh read-only discovery must report ready-for-bluegreen before any remote phase.
-- Allowed Routes: /image/, /canvas/, /canvas-uploads/
+- Allowed Routes: /image/, /canvas/
 
 ## Artifacts
 - Shell Image: pending

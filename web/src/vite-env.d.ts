@@ -11,6 +11,4 @@ interface ImportMetaEnv {
     readonly VITE_ANALYTICS_GA4_ID?: string;
     // 百度统计站点 ID
     readonly VITE_ANALYTICS_BAIDU_ID?: string;
-    // 固定上游地址；设置后渠道配置、导入文件和分享 URL 均不能覆盖
-    readonly VITE_FIXED_API_BASE_URL?: string;
 }

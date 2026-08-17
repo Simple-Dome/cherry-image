@@ -51,41 +51,24 @@ docker compose -f docker-compose.local.yml up -d --build
 
 当前主应用镜像只启动 Nginx 静态前端。画布、我的素材、生成记录和 AI API Key 默认保存在浏览器本地；第三方提示词由浏览器前端直连拉取，不需要额外挂载数据目录。
 
-## 固定上游地址（可选）
+## 固定上游地址
 
-如果你的部署只允许访问一个固定的 AI 网关，可在**构建镜像时**设置 `VITE_FIXED_API_BASE_URL`。设置后，所有渠道的 Base URL 都会固定为该地址，配置界面不可编辑；浏览器原有缓存、导入的配置文件和 URL 中的 `baseUrl` 参数也不能覆盖它。
+所有渠道均固定使用 `https://artworkers.online`。配置界面的 Base URL 不可编辑；浏览器原有缓存、导入的配置文件和 URL 中的 `baseUrl` 参数也不能覆盖它，变更上游地址需要修改源码后重新构建。
 
-例如固定到 `https://gptch.cloud`：
+## artworkers.online/image/ 发布准备
 
-```bash
-docker build \
-  --build-arg VITE_FIXED_API_BASE_URL=https://gptch.cloud \
-  -t infinite-canvas .
-```
-
-使用本地 Compose 构建时：
-
-```bash
-VITE_FIXED_API_BASE_URL=https://gptch.cloud \
-  docker compose -f docker-compose.local.yml up -d --build
-```
-
-`VITE_FIXED_API_BASE_URL` 是 Vite 构建期变量，不能通过 `docker run -e` 或发布镜像的 Compose 文件在容器启动后修改；变更地址需要重新构建镜像。
-
-## gptch.cloud/image/ 发布准备
-
-`gptch.cloud` 的根路径、`/v1` 和 `/api` 由 New API 持有。`/image/`、`/canvas/` 与 `/canvas-uploads/` 必须作为同一次完整蓝绿发布处理，不能通过生产机上的 `docker build`、直接 `docker run` 或手工改 Nginx 单独替换。
+`artworkers.online` 的根路径、`/v1` 和 `/api` 由 New API 持有。`/image/` 与 `/canvas/` 必须作为同一次完整蓝绿发布处理，不能通过生产机上的 `docker build`、直接 `docker run` 或手工改 Nginx 单独替换。当前 profile 仍为 `canvas-bluegreen-migration-required`，必须先获得单独授权完成 Canvas Blue/Green 迁移，普通发布流程不得绕过该门槛。
 
 当前仓库是 Image parent，Canvas 源码固定为 `vendor/infinite-canvas` gitlink。先准备完整、已推送的 source pair：
 
 ```bash
 git submodule update --init --recursive
 SOURCE_REF="$(git rev-parse HEAD)"
-TASK_ID="gptch-image-${SOURCE_REF:0:12}"
+TASK_ID="artworkers-image-${SOURCE_REF:0:12}"
 
 scripts/deploy/release-control.sh prepare-worktree \
   --task-id "$TASK_ID" \
-  --domain gptch.cloud \
+  --domain artworkers.online \
   --source-ref "$SOURCE_REF"
 
 scripts/deploy/release-control.sh dry-run \
@@ -94,12 +77,12 @@ scripts/deploy/release-control.sh dry-run \
 
 scripts/deploy/release-control.sh prepare-composite \
   --task-id "$TASK_ID" \
-  --domain gptch.cloud
+  --domain artworkers.online
 ```
 
 控制脚本会创建隔离 detached worktree，校验 parent commit 与 Canvas gitlink 完全一致，并在 `.release-artifacts/` 生成包含子模块源码的 composite archive。它不构建镜像、不连接生产机、不启动容器，也不改 Nginx。
 
-只有 gptch.cloud profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 archive 传给 `newapi-16` 构建 `linux/amd64` Shell、Canvas 及计划变更的 uploads edge 镜像。必须记录 commit、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
+只有 artworkers.online profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 archive 传给 `newapi-16` 构建 `linux/amd64` Shell 与 Canvas 镜像。若未来引入 uploads edge，必须先完成其独立 Blue/Green 迁移，再将其纳入同一次发布。必须记录 commit、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
 
 ## 统计分析（可选）
 
