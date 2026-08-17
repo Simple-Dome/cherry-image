@@ -8,7 +8,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 - artworkers.online Image 发布准备：在已提交且已推送的 parent commit 上初始化 `vendor/infinite-canvas` 后，运行 `scripts/deploy/release-control.sh prepare-worktree`、`dry-run --phase local-preparation` 与 `prepare-composite`；应生成 detached worktree、记录与 parent gitlink 相同的 Canvas commit，并生成包含 Canvas 源码的 composite archive。传入非 `artworkers.online` 域名、短 SHA、未推送 commit、脏 attached worktree、缺失/不一致/脏 Canvas checkout 或任一远端 phase 时必须失败，且不得构建镜像、连接生产、传输文件或修改 Nginx。每次普通发布前，新的只读 discovery 必须同时证明 Shell、Canvas 和 uploads edge 的 Blue/Green 候选、隔离 MinIO 边界及三个公共路由；任一非 `ready-for-bluegreen` 状态必须停止。
 - 固定上游地址：所有渠道的 Base URL 均固定显示为 `https://artworkers.online` 且无法编辑；已有浏览器缓存、导入配置文件或带 `baseUrl` 的分享 URL 均不得覆盖，拉取模型与各类生成请求仍应发送到该固定地址。
 - 生图工作台首次进入提醒：首次打开 `/image` 时应显示“生成期间请不要返回、刷新或关闭页面”的风险弹窗；点击「已了解」只关闭当前弹窗，再次进入页面仍应显示；点击「当天不再显示」后本地当天再次进入不显示，跨过本地零点后重新显示；点击「7天不再显示」后七天内再次进入不显示，第八天重新显示；弹窗只影响 `/image`，不应出现在首页、画布或视频工作台。
-- 子路径部署：使用 `VITE_BASE=/image/` 构建并经 `artworkers.online` 的 `/image/` 反代后，首页、模型图标、运行期 `config.js`、本地插件清单及 `/canvas/<id>` 刷新均应保持在 `/image/` 前缀下，不能访问根路径资源或落入 New API。
+- 子路径部署：Shell 使用 `VITE_BASE=/image/` 构建并经 `artworkers.online` 的 `/image/` 反代后，首页、模型图标、运行期 `config.js`、本地插件清单及 `/canvas/<id>` 刷新均应保持在 `/image/` 前缀下，不能访问根路径资源或落入 New API；Canvas 使用 `VITE_BASE=/canvas/` 构建后，favicon、Logo、OpenAI 图标、静态 JS/CSS、站内导航及 `/canvas/<id>` 刷新均应保持在 `/canvas/` 前缀下。
 
 - 画布生图即时预览：Gemini 文生图、图生图、局部编辑、视角生成及失败重试返回结果后，Canvas 节点应立即使用 data URL 显示并标记成功；后台完成 IndexedDB 持久化后应替换为 object URL、写入 `storageKey`、真实宽高、文件大小和 MIME 类型；后台持久化失败时图片仍应保持显示，不能把已成功的生成改成失败；连续重试或批量生成时，旧结果的后台回写不得覆盖新结果，刷新画布后图片仍应可恢复。
 - 画布节点展开编辑：图片、视频、文本、音频及生成配置节点应显示展开按钮，点击后以接近全屏的面板继续编辑，模型、生成参数、提示词和运行状态与原面板保持一致，点击右上角收起或按 Esc 可返回；存在上游图片连线时，普通及展开编辑面板应按生成输入顺序显示带编号缩略图，点击可预览大图，删除或调整连线后缩略图应同步更新；展开状态下模型下拉、参数浮层、`@` 引用菜单、图片预览和生成/停止操作均应可用。

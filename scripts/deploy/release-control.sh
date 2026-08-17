@@ -122,6 +122,13 @@ assert_canvas_openai_base() {
     [ "$count" = "1" ] || die "Canvas source must contain exactly one static OPENAI_BASE_URL = https://artworkers.online"
 }
 
+assert_canvas_subpath_contract() {
+    local canvas_dir="$1"
+    grep -qF 'ARG VITE_BASE=/canvas/' "$canvas_dir/Dockerfile" || die "Canvas Dockerfile must default VITE_BASE to /canvas/"
+    grep -qF 'base: appBase,' "$canvas_dir/web/vite.config.ts" || die "Canvas Vite config must use the normalized base"
+    grep -qF 'basename: import.meta.env.BASE_URL' "$canvas_dir/web/src/router.tsx" || die "Canvas router must use the Vite base as basename"
+}
+
 assert_prepared_pair() {
     local worktree="$1" parent_sha="$2" canvas_sha
     [ -d "$worktree/.git" ] || [ -f "$worktree/.git" ] || die "prepared worktree is missing: $worktree"
@@ -132,6 +139,7 @@ assert_prepared_pair() {
     [ -z "$(git -C "$worktree" status --porcelain --ignore-submodules=none)" ] || die "prepared worktree is dirty"
     [ -z "$(git -C "$worktree/$CANVAS_PATH" status --porcelain)" ] || die "Canvas checkout is dirty"
     assert_canvas_openai_base "$worktree/$CANVAS_PATH"
+    assert_canvas_subpath_contract "$worktree/$CANVAS_PATH"
 }
 
 read_manifest_value() {

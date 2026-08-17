@@ -82,7 +82,7 @@ scripts/deploy/release-control.sh prepare-composite \
 
 控制脚本会创建隔离 detached worktree，校验 parent commit 与 Canvas gitlink 完全一致，并在 `.release-artifacts/` 生成包含子模块源码的 composite archive。它不构建镜像、不连接生产机、不启动容器，也不改 Nginx。
 
-只有 artworkers.online profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 archive 传给 `newapi-16` 构建 `linux/amd64` Shell、Canvas 及计划变更的 uploads edge 镜像。Shell、Canvas 和 uploads edge 必须作为同一次候选验收和 Nginx 事务处理；持久 MinIO 保持不变。必须记录 commit、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
+只有 artworkers.online profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 archive 传给 `newapi-16` 构建 `linux/amd64` Shell、Canvas 及计划变更的 uploads edge 镜像。Shell 必须以 `VITE_BASE=/image/` 构建，Canvas 必须以 `VITE_BASE=/canvas/` 构建；候选验收须确认静态资源、站内导航和刷新不会丢失对应前缀。Shell、Canvas 和 uploads edge 必须作为同一次候选验收和 Nginx 事务处理；持久 MinIO 保持不变。必须记录 commit、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
 
 ## 统计分析（可选）
 

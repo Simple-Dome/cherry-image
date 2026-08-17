@@ -10,6 +10,7 @@
 + [调整] 画布生图结果改为先用 Gemini 返回的 data URL 标记成功并立即显示，后台再持久化到 IndexedDB、替换 object URL 和真实尺寸；持久化失败时保留已显示图片。
 + [调整] 所有渠道的 Base URL 固定为 `https://artworkers.online`，浏览器配置、导入文件和分享 URL 均不能覆盖。
 + [调整] 支持通过 `VITE_BASE` 构建到子路径，可部署到 `artworkers.online/image/` 并与根路径服务共存。
++ [调整] Canvas 镜像默认构建到 `artworkers.online/canvas/`，静态资源、站内导航和刷新均保留子路径前缀。
 
 + [新增] 图片、视频、文本、音频与生成配置节点的编辑面板支持展开编辑，并展示已连接参考图片缩略图。
 + [修复] 画布缩放和平移时视频设置面板的尺寸与锚点位置不同步的问题。
