@@ -79,7 +79,7 @@
 
 ## Image 发布与部署规范
 
-本仓库的 `main` 分支只绑定 `artworkers.online` Image 发布，不得把它用于其他域名或其他服务。Image 发布当前只覆盖 `/image/` 与 `/canvas/`；根路径、`/v1`、`/api`、New API、数据库、Redis、MinIO 数据目录及其他域名不在普通 Image 发布范围内。未来引入 uploads edge 前，必须先完成独立的 Blue/Green 迁移。
+本仓库的 `main` 分支只绑定 `artworkers.online` Image 发布，不得把它用于其他域名或其他服务。Image 发布覆盖 `/image/`、`/canvas/` 与 `/canvas-uploads/`；根路径、`/v1`、`/api`、New API、数据库、Redis、MinIO 数据目录及其他域名不在普通 Image 发布范围内。
 
 ### 主机边界
 
@@ -102,17 +102,17 @@
 ### Profile、授权与锁
 
 - 每次发布前必须设置唯一 `selected_domain=artworkers.online` 并做新的只读 discovery；profile 不是 `ready-for-bluegreen` 时只能做本地准备和只读 discovery，必须停止。`canvas-bluegreen-migration-required`、`upload-bluegreen-migration-required` 和 `bootstrap-required` 都是阻塞状态，不得隐藏或绕过。
-- Profile 只有在 fresh discovery 同时证明 Shell Blue/Green 与 Canvas Blue/Green 后，才能进入 `ready-for-bluegreen`。引入 uploads edge 后，还必须证明其为 Blue/Green 拓扑，以及该域名独立的 MinIO 容器、网络、持久目录、Bucket、凭据、对象命名空间和公开上传地址。
+- Profile 只有在 fresh discovery 同时证明 Shell Blue/Green、Canvas Blue/Green、Uploads Edge Blue/Green，以及该域名独立的 MinIO 容器、网络、持久目录、Bucket、凭据、对象命名空间和公开上传地址后，才能进入 `ready-for-bluegreen`。
 - 构建、打包、push 或调用技能都不代表生产授权。第一次生产命令前必须拥有新鲜授权，并明确点名 `root@155.103.156.90` 及允许的具体动作；需要通过 `PRODUCTION_RELEASE_AUTHORIZED=yes` 校验。未授权时不得 image load、候选启动、候选记录或 Nginx cutover。
 - 使用 `/root/.locks/new-api-release` 作为协调根，并使用窄语义锁：`build-artifact:image:<domain>:<parent-sha>:<canvas-sha>`（`newapi-16` 构建）、`image:<image-id>`（每个生产镜像）、`docker-load:global`（每次生产加载）、`domain:<domain>`（候选和回滚生命周期）、`nginx:global`（Nginx 事务及公共验证）。锁冲突必须输出 owner metadata 并以退出码 75 结束；不得隐式等待、抢锁或在构建/等待候选时持有 `nginx:global`。
 - 生产协调器文件名保持兼容：`production-image-<id>`、`production-domain-<domain>`、`production-nginx-global`；Image 额外使用 `build-artifact-image-<domain>-<parent>-<canvas>` 和 `production-docker-load-global`。New API 协调器也必须在 `docker load` 前获取全局 Docker 锁，Image 不得单方面假设其他服务参与协调。
 
 ### 蓝绿、回滚与范围
 
-- 每个被改变的无状态服务都必须有不重复的备用颜色、非公共候选端口、健康检查、回滚容器名和对应的 selected-domain Nginx upstream。Shell 与 Canvas 必须作为一个事务验收和切换；未来引入 artworkers.online uploads edge 后，也必须一并纳入该事务；持久 MinIO 在普通应用发布中保持不变。
+- 每个被改变的无状态服务都必须有不重复的备用颜色、非公共候选端口、健康检查、回滚容器名和对应的 selected-domain Nginx upstream。Shell、Canvas 和 artworkers.online uploads edge 必须作为一个事务验收和切换；持久 MinIO 在普通应用发布中保持不变。
 - Nginx 事务必须备份所有受影响的 selected-domain snippet，一次性修改 upstream，执行 `nginx -t`、reload 和公共验证；任一候选、语法、reload 或公共路由检查失败，都必须恢复全部备份并 reload。
-- 通过最终健康检查、公共路由、CSS MIME、Canvas iframe 与 API 鉴权后，每个独立服务只保留最新的已停止 `*-pre-*` rollback 容器；引入 uploads edge 时还必须通过专用上传探针。清理旧 rollback 时不得删除运行中的 Blue/Green、当前候选、其他服务/域名的 rollback、镜像、volume 或 active container。
-- 引入两种无状态 uploads edge 颜色后，它们只能代理到该域名唯一且隔离的 MinIO；不得跨域共享 MinIO 容器、volume、Bucket、凭据、对象命名空间或公开上传地址。MinIO 镜像、数据目录和拓扑变更必须另行做有完整性证明和回滚点的 stateful migration。
+- 通过最终健康检查、公共路由、CSS MIME、Canvas iframe、API 鉴权和专用上传探针后，每个独立服务只保留最新的已停止 `*-pre-*` rollback 容器；清理旧 rollback 时不得删除运行中的 Blue/Green、当前候选、其他服务/域名的 rollback、镜像、volume 或 active container。
+- 两种无状态 uploads edge 颜色只能代理到该域名唯一且隔离的 MinIO；不得跨域共享 MinIO 容器、volume、Bucket、凭据、对象命名空间或公开上传地址。MinIO 镜像、数据目录和拓扑变更必须另行做有完整性证明和回滚点的 stateful migration。
 - `scripts/deploy/bluegreen-host.sh` 是旧的单 Shell helper，不得用它绕过 release-control、Canvas source pair、profile gate、source provenance 或共享锁。
 
 ## 项目注意事项

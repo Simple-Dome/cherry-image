@@ -57,7 +57,7 @@ docker compose -f docker-compose.local.yml up -d --build
 
 ## artworkers.online/image/ 发布准备
 
-`artworkers.online` 的根路径、`/v1` 和 `/api` 由 New API 持有。`/image/` 与 `/canvas/` 必须作为同一次完整蓝绿发布处理，不能通过生产机上的 `docker build`、直接 `docker run` 或手工改 Nginx 单独替换。当前 profile 仍为 `canvas-bluegreen-migration-required`，必须先获得单独授权完成 Canvas Blue/Green 迁移，普通发布流程不得绕过该门槛。
+`artworkers.online` 的根路径、`/v1` 和 `/api` 由 New API 持有。`/image/`、`/canvas/` 与 `/canvas-uploads/` 必须作为同一次完整蓝绿发布处理，不能通过生产机上的 `docker build`、直接 `docker run` 或手工改 Nginx 单独替换。profile 经新的只读 discovery 已确认现有 Shell、Canvas、uploads edge 与隔离 MinIO 拓扑可进入 `ready-for-bluegreen`；每次发布仍必须重新 discovery，任一非就绪状态都必须停止。
 
 当前仓库是 Image parent，Canvas 源码固定为 `vendor/infinite-canvas` gitlink。先准备完整、已推送的 source pair：
 
@@ -82,7 +82,7 @@ scripts/deploy/release-control.sh prepare-composite \
 
 控制脚本会创建隔离 detached worktree，校验 parent commit 与 Canvas gitlink 完全一致，并在 `.release-artifacts/` 生成包含子模块源码的 composite archive。它不构建镜像、不连接生产机、不启动容器，也不改 Nginx。
 
-只有 artworkers.online profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 archive 传给 `newapi-16` 构建 `linux/amd64` Shell 与 Canvas 镜像。若未来引入 uploads edge，必须先完成其独立 Blue/Green 迁移，再将其纳入同一次发布。必须记录 commit、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
+只有 artworkers.online profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 archive 传给 `newapi-16` 构建 `linux/amd64` Shell、Canvas 及计划变更的 uploads edge 镜像。Shell、Canvas 和 uploads edge 必须作为同一次候选验收和 Nginx 事务处理；持久 MinIO 保持不变。必须记录 commit、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
 
 ## 统计分析（可选）
 

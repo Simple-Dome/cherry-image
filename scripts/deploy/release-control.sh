@@ -164,7 +164,7 @@ write_manifest() {
 
 ## Profile
 - Status: unverified; fresh read-only discovery must report ready-for-bluegreen before any remote phase.
-- Allowed Routes: /image/, /canvas/
+- Allowed Routes: /image/, /canvas/, /canvas-uploads/
 
 ## Artifacts
 - Shell Image: pending

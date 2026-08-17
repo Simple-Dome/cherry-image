@@ -3,6 +3,7 @@
 ## Unreleased
 
 + [调整] 当前仓库作为 artworkers.online Image parent 固定 Canvas gitlink，并提供隔离 source-pair 与 composite archive 发布准备控制脚本。
++ [调整] artworkers.online Image 发布范围纳入 uploads edge，并以实测 Shell、Canvas、uploads 双色与隔离 MinIO 拓扑作为发布 profile 的就绪前提。
 
 + [新增] 生图工作台首次进入时提示生成期间不要返回、刷新或关闭页面，并支持本次关闭、当天不再显示和 7 天不再显示。
 
