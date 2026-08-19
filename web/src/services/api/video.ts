@@ -970,13 +970,13 @@ function jimeng933StatusMessage(status: number | undefined, fallback: string) {
 
 function jimengStatusMessage(status: number | undefined, fallback: string, provider: "431" | "933") {
     if (status === 400) return `${fallback}：模型、时长、分辨率、比例、分镜或文本参数无效`;
-    if (status === 401) return "Artworkers API Key 无效或缺失";
-    if (status === 402 || status === 403) return "Artworkers 余额不足或没有模型权限";
+    if (status === 401) return "API Key 无效或缺失";
+    if (status === 402 || status === 403) return "余额不足或没有模型权限";
     if (status === 413) return `${provider} 即梦请求体、文件大小或素材数量超限`;
     if (status === 415) return `${provider} 即梦请求 Content-Type 不受支持`;
     if (status === 422) return `${provider} 即梦素材内容、尺寸、时长或组合无效`;
     if (status === 429) return `${provider} 即梦请求过快或当前没有可用容量，请稍后重试`;
-    if (status === 500 || status === 502 || status === 503 || status === 504) return "Artworkers 或上游服务暂时异常，请稍后查询已有任务";
+    if (status === 500 || status === 502 || status === 503 || status === 504) return "服务或上游暂时异常，请稍后查询已有任务";
     return status ? `${fallback}（${status}）` : fallback;
 }
 

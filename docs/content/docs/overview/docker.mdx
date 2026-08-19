@@ -51,38 +51,26 @@ docker compose -f docker-compose.local.yml up -d --build
 
 当前主应用镜像只启动 Nginx 静态前端。画布、我的素材、生成记录和 AI API Key 默认保存在浏览器本地；第三方提示词由浏览器前端直连拉取，不需要额外挂载数据目录。
 
-## 固定上游地址
+## 三域名 Image 发布准备
 
-所有渠道均固定使用 `https://artworkers.online`。配置界面的 Base URL 不可编辑；浏览器原有缓存、导入的配置文件和 URL 中的 `baseUrl` 参数也不能覆盖它，变更上游地址需要修改源码后重新构建。
+`gptch.cloud`、`artworkers.online` 和 `aiunify.xyz` 共用一个 `main` 集成线，但每个域名都是独立 release profile。所选域名的根路径、`/v1` 和 `/api` 由其 New API 持有；`/image/`、`/canvas/` 与 `/canvas-uploads/` 必须作为同一次完整蓝绿发布处理，不能通过生产机上的 `docker build`、直接 `docker run` 或手工改 Nginx 单独替换。
 
-## artworkers.online/image/ 发布准备
-
-`artworkers.online` 的根路径、`/v1` 和 `/api` 由 New API 持有。`/image/`、`/canvas/` 与 `/canvas-uploads/` 必须作为同一次完整蓝绿发布处理，不能通过生产机上的 `docker build`、直接 `docker run` 或手工改 Nginx 单独替换。profile 经新的只读 discovery 已确认现有 Shell、Canvas、uploads edge 与隔离 MinIO 拓扑可进入 `ready-for-bluegreen`；每次发布仍必须重新 discovery，任一非就绪状态都必须停止。
-
-当前仓库是 Image parent，Canvas 源码固定为 `vendor/infinite-canvas` gitlink。先准备完整、已推送的 source pair：
+当前仓库是 Image parent，Canvas 源码固定为 `vendor/infinite-canvas` gitlink。先准备完整、已推送的三域名 source pair：
 
 ```bash
 git submodule update --init --recursive
 SOURCE_REF="$(git rev-parse HEAD)"
-TASK_ID="artworkers-image-${SOURCE_REF:0:12}"
+TASK_PREFIX="image-release-${SOURCE_REF:0:12}"
 
-scripts/deploy/release-control.sh prepare-worktree \
-  --task-id "$TASK_ID" \
-  --domain artworkers.online \
-  --source-ref "$SOURCE_REF"
-
-scripts/deploy/release-control.sh dry-run \
-  --task-id "$TASK_ID" \
-  --phase local-preparation
-
-scripts/deploy/release-control.sh prepare-composite \
-  --task-id "$TASK_ID" \
-  --domain artworkers.online
+scripts/deploy/release-control.sh prepare-matrix \
+  --task-prefix "$TASK_PREFIX" \
+  --source-ref "$SOURCE_REF" \
+  --domains gptch.cloud,artworkers.online,aiunify.xyz
 ```
 
-控制脚本会创建隔离 detached worktree，校验 parent commit 与 Canvas gitlink 完全一致，并在 `.release-artifacts/` 生成包含子模块源码的 composite archive。它不构建镜像、不连接生产机、不启动容器，也不改 Nginx。
+控制脚本会为三个域名分别创建不可变 release ref、隔离 detached worktree 和 manifest；随后可针对单个 task 运行 `prepare-composite` 生成包含子模块源码的 archive。它不构建镜像、不连接生产机、不启动容器，也不改 Nginx。
 
-只有 artworkers.online profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 archive 传给 `newapi-16` 构建 `linux/amd64` Shell、Canvas 及计划变更的 uploads edge 镜像。Shell 必须以 `VITE_BASE=/image/` 构建，Canvas 必须以 `VITE_BASE=/canvas/` 构建；候选验收须确认静态资源、站内导航和刷新不会丢失对应前缀。Shell、Canvas 和 uploads edge 必须作为同一次候选验收和 Nginx 事务处理；持久 MinIO 保持不变。必须记录 commit、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
+只有选定 profile 经新一轮只读 discovery 确认为 `ready-for-bluegreen` 后，才可将该 profile 的 archive 传给 `newapi-16` 构建 `linux/amd64` Shell、Canvas 及计划变更的 uploads edge 镜像。Shell 必须以 `VITE_BASE=/image/` 和 `VITE_FIXED_API_BASE_URL=https://<domain>` 构建，Canvas 必须以 `VITE_BASE=/canvas/` 和同一地址构建；候选验收须确认静态资源、站内导航和刷新不会丢失对应前缀。Shell、Canvas 和 uploads edge 必须作为同一次候选验收和 Nginx 事务处理；持久 MinIO 保持不变。必须记录 commit、Canvas gitlink、构建参数、Dockerfile SHA-256、archive SHA-256 和镜像 ID；在用户明确授权 `root@155.103.156.90` 的 image load、candidate 和 cutover 动作前，不得执行任何生产写操作。
 
 ## 统计分析（可选）
 

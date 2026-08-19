@@ -79,7 +79,7 @@
 
 ## Image 发布与部署规范
 
-本仓库的 `main` 分支只绑定 `artworkers.online` Image 发布，不得把它用于其他域名或其他服务。Image 发布覆盖 `/image/`、`/canvas/` 与 `/canvas-uploads/`；根路径、`/v1`、`/api`、New API、数据库、Redis、MinIO 数据目录及其他域名不在普通 Image 发布范围内。
+本仓库的 `main` 分支是 Image 的唯一集成线；`gptch.cloud`、`artworkers.online` 和 `aiunify.xyz` 是独立 release profile，不得把任一域名当成另一个域名的生产来源。Image 发布只覆盖所选 profile 的 `/image/`、`/canvas/` 和 `/canvas-uploads/`；根路径、`/v1`、`/api`、New API、数据库、Redis、MinIO 数据目录及其他域名不在普通 Image 发布范围内。
 
 ### 主机边界
 
@@ -91,17 +91,17 @@
 ### Source Pair 与证据
 
 - Image release 永远是 parent + Canvas source pair，不是单独一个 parent SHA。必须记录当前 parent commit 和精确的 `vendor/infinite-canvas` gitlink commit；prepared worktree 必须 materialize 该 gitlink，parent 与 Canvas worktree 都必须干净。
-- 不得使用当前 attached checkout、attached branch worktree、其他任务 worktree 或 `/Users/ming/project/image` 共享工作区作为发布源。每次发布必须创建独立 task id，并运行：
-  `scripts/deploy/release-control.sh prepare-worktree --task-id <id> --domain artworkers.online --source-ref <完整40位SHA>`。
+- 不得使用当前 attached checkout、attached branch worktree、其他任务 worktree 或 `/Users/ming/project/image` 共享工作区作为发布源。每次发布必须从已推送且包含于 `main` 的 parent SHA 创建独立 task id、域名 release ref 和 detached worktree；三个域名可以通过一次 `prepare-matrix` 扇出，但每行仍必须独立验收。
+- `refs/image-release/<domain>/<task-id>/<parent-sha>` 只是不可变 source provenance ref，不代表生产授权、镜像可用或 Nginx 已切换；它不能跨域复用。
 - `release-control.sh` 只负责控制端的 source preparation；它不负责、也不得在本机执行 Docker 构建。`prepare-composite` 生成的归档才是发送给 `newapi-16` 的唯一源码输入。
 - parent commit 必须已推送到匹配的 `origin/main`；缺少 gitlink、gitlink 不匹配、Canvas checkout 脏、parent 脏、短 SHA、未推送 commit 或跨域 source 都必须终止发布，不能用当前本地子模块内容替代。
 - task manifest 必须保留 selected domain、profile status、允许路由、Shell/Canvas/Uploads 拓扑、parent/Canvas commit、Dockerfile SHA-256、composite archive SHA-256、两种颜色的镜像 tag/ID、两份镜像归档路径/校验和及验证状态。候选只有在记录的平台为 `linux/amd64` 且验证达到 `production-loaded-verified` 后才可视为可用。
 - 必须记录不可变 parent commit、Canvas commit、源码归档 SHA、Shell/Canvas Dockerfile SHA、镜像 tag/ID、平台架构、保存归档 SHA，并保留构建目录、source marker 和归档到最终生产验证结束。
-- 对 Canvas source 必须要求唯一静态 `OPENAI_BASE_URL = "https://artworkers.online"`；禁止缺失、动态、重复、带路径或跨域地址。Shell 的 `DEFAULT_API_URL`、`INFINITE_CANVAS_URL`、Canvas 的 `NEXT_BASE_PATH`、`NEXT_PUBLIC_DOC_URL`、上传存储地址和公开上传地址必须绑定同一个 selected domain。
+- Canvas source 必须使用唯一的 `VITE_FIXED_API_BASE_URL` 构建输入，禁止把某个域名硬编码到共享 source。Shell 与 Canvas 的 `VITE_FIXED_API_BASE_URL`、两者的 `VITE_BASE`、上传存储地址和公开上传地址必须绑定同一个 selected domain。
 
 ### Profile、授权与锁
 
-- 每次发布前必须设置唯一 `selected_domain=artworkers.online` 并做新的只读 discovery；profile 不是 `ready-for-bluegreen` 时只能做本地准备和只读 discovery，必须停止。`canvas-bluegreen-migration-required`、`upload-bluegreen-migration-required` 和 `bootstrap-required` 都是阻塞状态，不得隐藏或绕过。
+- 每次发布前必须设置唯一 `selected_domain` 并做新的只读 discovery；profile 不是 `ready-for-bluegreen` 时只能做本地准备和只读 discovery，必须停止。`canvas-bluegreen-migration-required`、`upload-bluegreen-migration-required` 和 `bootstrap-required` 都是阻塞状态，不得隐藏或绕过。
 - Profile 只有在 fresh discovery 同时证明 Shell Blue/Green、Canvas Blue/Green、Uploads Edge Blue/Green，以及该域名独立的 MinIO 容器、网络、持久目录、Bucket、凭据、对象命名空间和公开上传地址后，才能进入 `ready-for-bluegreen`。
 - 构建、打包、push 或调用技能都不代表生产授权。第一次生产命令前必须拥有新鲜授权，并明确点名 `root@155.103.156.90` 及允许的具体动作；需要通过 `PRODUCTION_RELEASE_AUTHORIZED=yes` 校验。未授权时不得 image load、候选启动、候选记录或 Nginx cutover。
 - 使用 `/root/.locks/new-api-release` 作为协调根，并使用窄语义锁：`build-artifact:image:<domain>:<parent-sha>:<canvas-sha>`（`newapi-16` 构建）、`image:<image-id>`（每个生产镜像）、`docker-load:global`（每次生产加载）、`domain:<domain>`（候选和回滚生命周期）、`nginx:global`（Nginx 事务及公共验证）。锁冲突必须输出 owner metadata 并以退出码 75 结束；不得隐式等待、抢锁或在构建/等待候选时持有 `nginx:global`。
@@ -109,7 +109,7 @@
 
 ### 蓝绿、回滚与范围
 
-- 每个被改变的无状态服务都必须有不重复的备用颜色、非公共候选端口、健康检查、回滚容器名和对应的 selected-domain Nginx upstream。Shell、Canvas 和 artworkers.online uploads edge 必须作为一个事务验收和切换；持久 MinIO 在普通应用发布中保持不变。
+- 每个被改变的无状态服务都必须有不重复的备用颜色、非公共候选端口、健康检查、回滚容器名和对应的 selected-domain Nginx upstream。所选 profile 的 Shell、Canvas 和 uploads edge 必须作为一个事务验收和切换；持久 MinIO 在普通应用发布中保持不变。
 - Nginx 事务必须备份所有受影响的 selected-domain snippet，一次性修改 upstream，执行 `nginx -t`、reload 和公共验证；任一候选、语法、reload 或公共路由检查失败，都必须恢复全部备份并 reload。
 - 通过最终健康检查、公共路由、CSS MIME、Canvas iframe、API 鉴权和专用上传探针后，每个独立服务只保留最新的已停止 `*-pre-*` rollback 容器；清理旧 rollback 时不得删除运行中的 Blue/Green、当前候选、其他服务/域名的 rollback、镜像、volume 或 active container。
 - 两种无状态 uploads edge 颜色只能代理到该域名唯一且隔离的 MinIO；不得跨域共享 MinIO 容器、volume、Bucket、凭据、对象命名空间或公开上传地址。MinIO 镜像、数据目录和拓扑变更必须另行做有完整性证明和回滚点的 stateful migration。

@@ -1,0 +1,70 @@
+---
+title: Image 三域名发布矩阵
+description: 单一 main 集成线与按域名隔离的 Image source release
+---
+
+# Image 三域名发布矩阵
+
+Image 使用单一 `main` 集成线。`gptch.cloud`、`artworkers.online` 和
+`aiunify.xyz` 不是三个长期分叉的生产分支，而是三个独立的 release
+profile：每个 profile 都有自己的 parent/Canvas source pair、不可变 release
+ref、detached worktree、构建参数、镜像证据、上传 edge 和 MinIO 边界。
+
+```text
+main@<parent-sha>
+  |-- gptch.cloud       -> refs/image-release/gptch.cloud/<task>/<parent-sha>
+  |-- artworkers.online -> refs/image-release/artworkers.online/<task>/<parent-sha>
+  `-- aiunify.xyz       -> refs/image-release/aiunify.xyz/<task>/<parent-sha>
+```
+
+## 本地准备
+
+控制端必须使用干净的 attached checkout，且 parent SHA 已推送并包含于
+`origin/main`。一次矩阵准备只创建本地 source evidence，不构建镜像、不传输
+归档、不加载 Docker、不启动候选、不切换 Nginx：
+
+```bash
+git submodule update --init --recursive
+SOURCE_REF="$(git rev-parse HEAD)"
+
+scripts/deploy/release-control.sh prepare-matrix \
+  --task-prefix image-release-20260819 \
+  --source-ref "$SOURCE_REF" \
+  --domains gptch.cloud,artworkers.online,aiunify.xyz
+```
+
+命令会为每个域名创建：
+
+- `refs/image-release/<domain>/<task-id>/<parent-sha>` 不可变 source provenance ref；
+- 一个干净的 detached worktree；
+- `.agents/state/tasks/<task-id>/process.md` manifest；
+- 后续可独立生成的 composite source archive。
+
+每一行的 manifest 会记录域名、parent SHA、Canvas gitlink、Shell/Canvas
+Dockerfile SHA、构建参数和允许路径。域名之间不能复用 worktree、archive、
+镜像、Nginx snippet、容器、volume、Bucket、凭据或 MinIO 对象命名空间。
+
+## 域名构建输入
+
+Shell 每个 profile 使用 `VITE_BASE=/image/` 和对应的
+`VITE_FIXED_API_BASE_URL=https://<domain>`。Canvas 使用
+`VITE_BASE=/canvas/` 和相同的 `VITE_FIXED_API_BASE_URL`。
+
+Canvas source 只保留参数化输入：
+
+```ts
+export const FIXED_API_BASE_URL = (import.meta.env.VITE_FIXED_API_BASE_URL || "").trim().replace(/\/+$/, "");
+```
+
+因此同一个 parent SHA 可以产生三个不同的域名镜像，但每个镜像的构建和
+运行证据仍然必须独立记录。`/canvas/` 的静态资源、站内导航和刷新也必须
+保持此前缀。
+
+## 发布边界
+
+矩阵准备不是生产授权，也不代表 profile 已经 ready。每个域名仍必须单独
+完成新鲜 topology discovery、Shell/Canvas/uploads edge Blue/Green 候选、
+`linux/amd64` 构建验证、锁、明确的生产授权、Nginx 原子事务、公共路由和
+浏览器验收。普通 Image 发布只处理所选 profile 的 `/image/`、`/canvas/`
+和 `/canvas-uploads/`，不触碰根路径、New API、数据库、Redis 或 MinIO
+持久数据迁移。

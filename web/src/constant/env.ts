@@ -8,5 +8,5 @@ export const PLUGIN_REGISTRY_URL = import.meta.env.VITE_PLUGIN_REGISTRY_URL || "
 // 431 多模态视频接口要求参考素材使用公网 URL。配置后，浏览器会把本地素材上传到该外部服务。
 export const UPLOAD_BASE = (import.meta.env.VITE_UPLOAD_BASE || "").replace(/\/+$/, "");
 
-// 所有渠道始终直连 artworkers.online；浏览器配置、导入和分享参数不能覆盖。
-export const FIXED_API_BASE_URL = "https://artworkers.online";
+// 部署 profile 可在构建时固定所有渠道的上游地址。
+export const FIXED_API_BASE_URL = (import.meta.env.VITE_FIXED_API_BASE_URL || "").trim().replace(/\/+$/, "");
