@@ -274,6 +274,16 @@ assert_task_is_active_or_new() {
 
     if [ -e "$manifest" ]; then
         [ -f "$manifest" ] || die "task manifest is not a regular file: $manifest"
+        # Codex initializes task-local process.md before this controller owns it.
+        # Accept only that plain handoff shape for first release initialization.
+        if ! grep -Fqx '## Release State' "$manifest" && \
+            ! grep -Fqx '## Source' "$manifest" && \
+            ! grep -Fqx '## Composite Archive' "$manifest" && \
+            ! grep -Fqx '## Live Topology' "$manifest" && \
+            ! grep -Fqx '## Artifacts' "$manifest" && \
+            ! grep -Fqx '## Production' "$manifest"; then
+            return
+        fi
         state="$("$STATE_SCRIPT" show --manifest "$manifest")" || die "existing task state cannot be read; use a new task id or repair task state"
         phase="$(printf '%s\n' "$state" | sed -n 's/^current_phase=//p')"
         status="$(printf '%s\n' "$state" | sed -n 's/^phase_status=//p')"

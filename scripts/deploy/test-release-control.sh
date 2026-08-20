@@ -107,6 +107,13 @@ for domain in gptch.cloud artworkers.online aiunify.xyz; do
     test ! -e "$worktree/controller-only.txt" || fail "controller file leaked into $domain release worktree"
 done
 
+HANDOFF_TASK='handoff-process'
+HANDOFF_MANIFEST="$STATE/$HANDOFF_TASK/process.md"
+mkdir -p "$STATE/$HANDOFF_TASK"
+printf '%s\n' '## Current Task' '- Fresh release handoff before controller initialization.' >"$HANDOFF_MANIFEST"
+bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$HANDOFF_TASK" --domain gptch.cloud --source-ref "$PARENT_COMMIT" >/dev/null
+grep -Fx -- '- Current Phase: source-prepared' "$HANDOFF_MANIFEST" >/dev/null || fail 'handoff process initializes release state'
+
 STATE_TASK="state-machine"
 STATE_MANIFEST="$STATE/$STATE_TASK/process.md"
 bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$STATE_TASK" --domain gptch.cloud --source-ref "$PARENT_COMMIT" >/dev/null
