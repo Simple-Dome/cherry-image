@@ -48,6 +48,12 @@ describe("933 即梦视频输入校验", () => {
         expect(validateJimeng933VideoInput({ ...validInput, seed: 1.5 })).toContain("Seed");
     });
 
+    test("不在本地限制提示词、负面提示词和分镜提示词长度", () => {
+        const longPrompt = "字".repeat(1501);
+        expect(validateJimeng933VideoInput({ ...validInput, prompt: longPrompt, negativePrompt: longPrompt })).toBeNull();
+        expect(validateJimeng933VideoInput({ ...validInput, prompt: "", shots: [{ id: "one", prompt: longPrompt, duration: 2 }, { id: "two", prompt: longPrompt, duration: 3 }] })).toBeNull();
+    });
+
     test("有合法分镜时允许顶层提示词为空", () => {
         const shots = [
             { id: "one", prompt: "建立场景", duration: 2 },
