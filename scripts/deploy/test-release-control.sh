@@ -79,6 +79,10 @@ git -C "$REPO" remote add origin "$REPO_ORIGIN"
 git -C "$REPO" push -qu origin main
 PARENT_COMMIT="$(git -C "$REPO" rev-parse HEAD)"
 
+# The attached checkout is a controller only. Its local files must neither
+# block preparation nor appear in the detached release source worktree.
+printf 'controller-only\n' > "$REPO/controller-only.txt"
+
 PROFILE_OUTPUT="$(bash "$CONTROL_SCRIPT" profile --repo-root "$REPO" --domain aiunify.xyz)"
 printf '%s\n' "$PROFILE_OUTPUT" | grep -Fx 'origin=https://aiunify.xyz' >/dev/null || fail "profile origin"
 printf '%s\n' "$PROFILE_OUTPUT" | grep -Fx 'documented_status=unverified' >/dev/null || fail "documented profile status"
@@ -100,12 +104,18 @@ for domain in gptch.cloud artworkers.online aiunify.xyz; do
     test -z "$(git -C "$worktree" symbolic-ref -q HEAD || true)" || fail "worktree is attached for $domain"
     test "$(git -C "$worktree/vendor/infinite-canvas" rev-parse HEAD)" = "$CANVAS_COMMIT" || fail "Canvas pair for $domain"
     test -z "$(git -C "$worktree" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" || fail "worktree is dirty for $domain"
+    test ! -e "$worktree/controller-only.txt" || fail "controller file leaked into $domain release worktree"
 done
 
 STATE_TASK="state-machine"
 STATE_MANIFEST="$STATE/$STATE_TASK/process.md"
 bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$STATE_TASK" --domain gptch.cloud --source-ref "$PARENT_COMMIT" >/dev/null
 grep -Fx -- '- Current Phase: source-prepared' "$STATE_MANIFEST" >/dev/null || fail 'source-prepared release state'
+# An active task may resume with the exact same detached worktree and source pair.
+bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$STATE_TASK" --domain gptch.cloud --source-ref "$PARENT_COMMIT" >/dev/null
+git -C "$WORKTREES/$STATE_TASK" checkout -qb unsafe-attached
+expect_failure 'prepared worktree must be detached' bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$STATE_TASK" --domain gptch.cloud --source-ref "$PARENT_COMMIT"
+git -C "$WORKTREES/$STATE_TASK" checkout -q --detach "$PARENT_COMMIT"
 bash "$CONTROL_SCRIPT" prepare-composite --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$STATE_TASK" --domain gptch.cloud >/dev/null
 grep -Fx -- '- Current Phase: composite-prepared' "$STATE_MANIFEST" >/dev/null || fail 'composite-prepared release state'
 DRY_RUN_OUTPUT="$(bash "$CONTROL_SCRIPT" dry-run --repo-root "$REPO" --state-root "$STATE" --task-id "$STATE_TASK" --phase local-preparation)"
@@ -141,5 +151,17 @@ bash "$CONTROL_SCRIPT" record-live-topology --repo-root "$REPO" --state-root "$S
 expect_failure 'live topology evidence is stale' bash "$CONTROL_SCRIPT" assert-live-ready --repo-root "$REPO" --state-root "$STATE" --task-id "$STATE_TASK" --domain gptch.cloud --max-age-seconds 60
 
 expect_failure 'duplicate matrix domain: gptch.cloud' bash "$CONTROL_SCRIPT" prepare-matrix --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --task-prefix duplicate --source-ref "$PARENT_COMMIT" --domains gptch.cloud,gptch.cloud
+
+ORPHAN_TASK='orphan'
+git -C "$REPO" worktree add --detach "$WORKTREES/$ORPHAN_TASK" "$PARENT_COMMIT" >/dev/null
+expect_failure 'release worktree already exists without a task manifest' bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$ORPHAN_TASK" --domain artworkers.online --source-ref "$PARENT_COMMIT"
+
+CLOSED_TASK='closed-task'
+CLOSED_MANIFEST="$STATE/$CLOSED_TASK/process.md"
+bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$CLOSED_TASK" --domain artworkers.online --source-ref "$PARENT_COMMIT" >/dev/null
+for phase in composite-prepared local-preparation-verified live-discovery-recorded build-host-preflight artifacts-built production-authorized production-loaded-verified candidates-healthy cutover-complete public-accepted closed; do
+    bash "$SCRIPT_DIR/release-state.sh" transition --manifest "$CLOSED_MANIFEST" --to "$phase" --evidence "test:$phase" >/dev/null
+done
+expect_failure 'task id is already complete at phase closed' bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$CLOSED_TASK" --domain artworkers.online --source-ref "$PARENT_COMMIT"
 
 printf 'image release-control tests passed\n'

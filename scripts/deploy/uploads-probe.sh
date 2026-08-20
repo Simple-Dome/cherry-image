@@ -52,7 +52,11 @@ status_is_404() {
 
 request_status() {
     local method="$1" url="$2" output="${3:-/dev/null}"
-    shift 3 || true
+    if [ "$#" -ge 3 ]; then
+        shift 3
+    else
+        shift 2
+    fi
     curl --silent --show-error --request "$method" --output "$output" --write-out '%{http_code}' "$url" "$@"
 }
 

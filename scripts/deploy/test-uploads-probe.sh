@@ -25,6 +25,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
     '        --write-out) shift 2 ;;' \
     '        --silent|--show-error|--location) shift ;;' \
     '        http://*|https://*) url="$1"; shift ;;' \
+    '        DELETE) printf "unexpected duplicate DELETE argument\\n" >&2; exit 64 ;;' \
     '        *) shift ;;' \
     '    esac' \
     'done' \

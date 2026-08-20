@@ -219,12 +219,6 @@ ensure_release_ref() {
     printf '%s' "$release_ref"
 }
 
-assert_attached_checkout_clean() {
-    local status
-    status="$(git -C "$REPO_ROOT" status --porcelain)"
-    [ -z "$status" ] || die "attached checkout is dirty; commit or remove local changes before release preparation"
-}
-
 assert_pushed_main_commit() {
     local source_sha remote_sha
     source_sha="$(git -C "$REPO_ROOT" rev-parse --verify "$SOURCE_REF^{commit}")"
@@ -235,9 +229,10 @@ assert_pushed_main_commit() {
 }
 
 assert_shell_domain_build_contract() {
-    grep -qE '^[[:space:]]*ARG VITE_BASE=' "$REPO_ROOT/Dockerfile" || die "Shell Dockerfile must declare VITE_BASE"
-    grep -qE '^[[:space:]]*ARG VITE_FIXED_API_BASE_URL' "$REPO_ROOT/Dockerfile" || die "Shell Dockerfile must declare VITE_FIXED_API_BASE_URL"
-    grep -qE '^[[:space:]]*ENV VITE_FIXED_API_BASE_URL=\$\{VITE_FIXED_API_BASE_URL\}' "$REPO_ROOT/Dockerfile" || die "Shell Dockerfile must export VITE_FIXED_API_BASE_URL"
+    local source_dir="$1"
+    grep -qE '^[[:space:]]*ARG VITE_BASE=' "$source_dir/Dockerfile" || die "Shell Dockerfile must declare VITE_BASE"
+    grep -qE '^[[:space:]]*ARG VITE_FIXED_API_BASE_URL' "$source_dir/Dockerfile" || die "Shell Dockerfile must declare VITE_FIXED_API_BASE_URL"
+    grep -qE '^[[:space:]]*ENV VITE_FIXED_API_BASE_URL=\$\{VITE_FIXED_API_BASE_URL\}' "$source_dir/Dockerfile" || die "Shell Dockerfile must export VITE_FIXED_API_BASE_URL"
 }
 
 canvas_gitlink_sha() {
@@ -261,15 +256,52 @@ assert_canvas_subpath_contract() {
     grep -qF 'basename: import.meta.env.BASE_URL' "$canvas_dir/web/src/router.tsx" || die "Canvas router must use the Vite base as basename"
 }
 
+git_common_dir() {
+    git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || die "cannot resolve Git common directory: $1"
+}
+
+assert_detached_release_worktree() {
+    local worktree="$1" canonical_worktree
+    canonical_worktree="$(cd "$worktree" && pwd -P)" || die "prepared worktree does not exist: $worktree"
+    [ "$canonical_worktree" != "$REPO_ROOT" ] || die "attached checkout cannot be used as a release worktree"
+    git -C "$worktree" symbolic-ref -q HEAD >/dev/null && die "prepared worktree must be detached; use a new task id for a new release"
+    [ "$(git_common_dir "$worktree")" = "$(git_common_dir "$REPO_ROOT")" ] || die "prepared worktree belongs to a different Git repository"
+}
+
+assert_task_is_active_or_new() {
+    local parent_sha="$1" manifest existing_domain existing_parent state phase status
+    manifest="$(manifest_path)"
+
+    if [ -e "$manifest" ]; then
+        [ -f "$manifest" ] || die "task manifest is not a regular file: $manifest"
+        state="$("$STATE_SCRIPT" show --manifest "$manifest")" || die "existing task state cannot be read; use a new task id or repair task state"
+        phase="$(printf '%s\n' "$state" | sed -n 's/^current_phase=//p')"
+        status="$(printf '%s\n' "$state" | sed -n 's/^phase_status=//p')"
+        [ "$status" = active ] || die "task id is already $status at phase $phase; use a new task id for a new release"
+        existing_domain="$(read_manifest_value 'Domain')"
+        existing_parent="$(read_manifest_value 'Parent Commit')"
+        [ "$existing_domain" = "$DOMAIN" ] || die "active task domain does not match requested domain; use a new task id"
+        [ "$existing_parent" = "$parent_sha" ] || die "active task parent commit does not match requested source; use a new task id"
+    elif [ -e "$(task_state_dir)" ]; then
+        die "task state directory already exists without a task manifest; use a new task id or repair task state"
+    fi
+
+    if [ -e "$(task_worktree)" ] && [ ! -f "$manifest" ]; then
+        die "release worktree already exists without a task manifest; use a new task id or inspect the orphaned worktree"
+    fi
+}
+
 assert_prepared_pair() {
     local worktree="$1" parent_sha="$2" canvas_sha
     [ -d "$worktree/.git" ] || [ -f "$worktree/.git" ] || die "prepared worktree is missing: $worktree"
+    assert_detached_release_worktree "$worktree"
     [ "$(git -C "$worktree" rev-parse HEAD)" = "$parent_sha" ] || die "prepared worktree parent commit does not match manifest"
     canvas_sha="$(canvas_gitlink_sha "$parent_sha")"
     [ -d "$worktree/$CANVAS_PATH/.git" ] || [ -f "$worktree/$CANVAS_PATH/.git" ] || die "Canvas submodule is not initialized"
     [ "$(git -C "$worktree/$CANVAS_PATH" rev-parse HEAD)" = "$canvas_sha" ] || die "Canvas checkout does not match parent gitlink"
     [ -z "$(git -C "$worktree" status --porcelain --ignore-submodules=none)" ] || die "prepared worktree is dirty"
     [ -z "$(git -C "$worktree/$CANVAS_PATH" status --porcelain)" ] || die "Canvas checkout is dirty"
+    assert_shell_domain_build_contract "$worktree"
     assert_canvas_openai_base "$worktree/$CANVAS_PATH"
     assert_canvas_subpath_contract "$worktree/$CANVAS_PATH"
 }
@@ -425,15 +457,14 @@ prepare_worktree() {
     validate_task
     validate_domain
     validate_source_ref
-    assert_attached_checkout_clean
     assert_pushed_main_commit
-    assert_shell_domain_build_contract
 
     local parent_sha canvas_sha worktree artifact_dir
     parent_sha="$(git -C "$REPO_ROOT" rev-parse "$SOURCE_REF")"
     canvas_sha="$(canvas_gitlink_sha "$parent_sha")"
     worktree="$(task_worktree)"
     artifact_dir="$(task_artifact_dir)"
+    assert_task_is_active_or_new "$parent_sha"
     mkdir -p "$RELEASE_WORKTREE_ROOT" "$artifact_dir"
 
     if [ -e "$worktree" ]; then
@@ -605,7 +636,6 @@ prepare_matrix() {
     require_repo_root
     validate_task_prefix
     validate_source_ref
-    assert_attached_checkout_clean
     assert_pushed_main_commit
 
     local parent_sha domain task_id
