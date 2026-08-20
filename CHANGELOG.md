@@ -12,6 +12,7 @@
 + [调整] Shell 和 Canvas 支持通过 `VITE_BASE` 构建到 `/image/` 与 `/canvas/` 子路径，并与根路径服务共存。
 + [新增] Image 发布新增可恢复的分块归档传输、远端事务执行器、uploads 临时对象探针和 Canvas 域名契约语义校验。
 + [新增] Image release manifest 增加原子阶段状态机，以及与静态 Profile 分离、由 SHA 和时效约束的 live topology gate。
++ [修复] Canvas 发布源码不再以其他支持域名作为渠道 fallback，固定接口地址始终优先生效。
 
 + [新增] 图片、视频、文本、音频与生成配置节点的编辑面板支持展开编辑，并展示已连接参考图片缩略图。
 + [修复] 画布缩放和平移时视频设置面板的尺寸与锚点位置不同步的问题。
