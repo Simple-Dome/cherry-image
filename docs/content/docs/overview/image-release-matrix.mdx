@@ -68,3 +68,67 @@ export const FIXED_API_BASE_URL = (import.meta.env.VITE_FIXED_API_BASE_URL || ""
 浏览器验收。普通 Image 发布只处理所选 profile 的 `/image/`、`/canvas/`
 和 `/canvas-uploads/`，不触碰根路径、New API、数据库、Redis 或 MinIO
 持久数据迁移。
+
+## 远端传输与上传验收
+
+生产归档传输使用仓库内的 `scripts/deploy/remote-release-helper.sh`。每个
+数据块都通过独立的 Base64 数据 SSH 发送；控制 SSH 使用 `ssh -n`，不会读取
+下一个数据块的 stdin。目标端先写入 `.partial`，逐块检查字节数和 SHA-256，
+全部拼接后再检查完整归档 SHA-256，最后才原子改名。发现任意 `.partial` 时
+会 fail-closed，不会继续 `docker load`。
+
+```bash
+scripts/deploy/remote-release-helper.sh transfer-archive \
+  --remote newapi-16 \
+  --remote-dir /root/image-release/<task>/incoming \
+  --archive .release-artifacts/<task>/shell.image.tar
+```
+
+需要执行远端事务时，先把脚本作为受校验的临时文件传输，再由同一个 helper
+执行；不要把长 heredoc 嵌套在承载归档数据的 SSH 管道中：
+
+```bash
+scripts/deploy/remote-release-helper.sh run-transaction \
+  --remote root@155.103.156.90 \
+  --script /tmp/gptch-cutover.sh \
+  --remote-script /root/image-release/<task>/gptch-cutover.sh
+```
+
+uploads edge 的专用探针使用 `scripts/deploy/uploads-probe.sh`，调用方必须显式
+传入对应域名、颜色和临时对象的 signed PUT/GET/DELETE URL。探针只执行
+`PUT -> GET -> SHA-256 -> DELETE -> GET 404`，不发现凭据、不修改 MinIO 配置；
+任一步失败都会尝试删除已写入的临时对象。
+
+## 阶段与线上拓扑
+
+每个 release task 的 `process.md` 都包含 `Release State`。它只允许从 source
+preparation 依次推进到 composite、local verification、live discovery、构建、
+候选、切流、公共验收和 closed；状态为 `blocked` 时，后续转换会 fail-closed。
+`scripts/deploy/release-control.sh` 当前只推进 source、composite、local verification
+及记录 fresh topology 后的 live discovery 阶段；任何构建、候选或生产阶段仍需单独
+的授权流程和对应证据。
+
+`Profile` 里的 `Documented Status` 只描述静态资料，不表示线上实际可发布。新的
+selected-domain discovery 应保存为只包含拓扑结论的本地 evidence 文件：域名、UTC
+观测时间、Shell/Canvas/uploads 的 Blue/Green 检查和 MinIO 隔离检查。控制器记录
+该文件的 SHA-256 后，使用以下命令记录、查看和放行检查：
+
+```bash
+scripts/deploy/release-control.sh record-live-topology \
+  --task-id <task> --domain gptch.cloud --evidence-file <topology.env>
+
+scripts/deploy/release-control.sh live-status \
+  --task-id <task> --domain gptch.cloud
+
+scripts/deploy/release-control.sh assert-live-ready \
+  --task-id <task> --domain gptch.cloud --max-age-seconds 1800
+```
+
+`assert-live-ready` 只有在 evidence 对应 selected domain、四项检查均为 `ready`、
+SHA-256 有效且观测时间未过期时才通过。它不构建镜像、不连接生产，也不会用静态
+Profile 覆盖 live 结论。
+
+`<topology.env>` 必须恰好包含一项 `domain`、`observed_at`、
+`shell_bluegreen`、`canvas_bluegreen`、`uploads_bluegreen` 和
+`minio_isolation`。四个检查使用 `ready`、`not-ready` 或 `unknown`；只有全为
+`ready` 才会记录 `live_status=ready-for-bluegreen`。

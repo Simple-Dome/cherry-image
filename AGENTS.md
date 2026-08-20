@@ -87,6 +87,8 @@
 - `newapi-16`（`103.85.227.193`）是唯一构建与测试主机。所有 Shell、Canvas 和变更中的 uploads edge 镜像必须在该主机以 `linux/amd64` 使用 Docker Buildx 构建、验证并保存归档；该主机保留构建证据直到生产验证结束。
 - `root@155.103.156.90` 是生产部署主机，只能接收经过校验的归档、比较 SHA 和镜像身份、执行 `docker load`、启动候选、健康检查及明确授权的 Nginx 切换；禁止在生产机编译、安装依赖、构建或打包测试镜像。
 - 源码只发送到 `newapi-16`；生产机只接收精确的已校验镜像归档。向生产传输时默认由 `newapi-16` 直连 `root@155.103.156.90`，本机控制端只允许通过 SSH agent forwarding 提供认证，不得中继镜像内容；使用 `set -o pipefail` 的 Base64 文本传输，按原始归档每块 3 MiB 传输，目标端逐块校验 SHA-256、全部完成后再拼接并校验完整归档 SHA-256，校验失败或存在 `.partial` 文件时禁止 `docker load`，不得传输源码目录。
+- 镜像传输与远端事务必须优先使用 `scripts/deploy/remote-release-helper.sh`：数据 SSH 与控制 SSH 分离，所有控制 SSH 使用 `-n`，一块数据只能由一个数据 SSH stdin 承载；不得用嵌套 heredoc、同一 stdin 的内层 SSH 或不可观察后台任务传输归档。目标端 `.partial` 必须保留并 fail-closed，完成归档和每块 SHA-256 一致后才可原子改名。
+- uploads 专用验收必须使用显式 signed PUT/GET/DELETE URL 和临时对象；优先使用 `scripts/deploy/uploads-probe.sh` 做 `PUT -> GET -> SHA-256 -> DELETE -> GET 404`，在写对象前检查 `curl`、`sha256sum`、`mktemp`，任一失败路径都要尝试删除已写入的临时对象。不得让 probe 推断、打印或复制 MinIO 凭据。
 
 ### Source Pair 与证据
 
@@ -101,8 +103,10 @@
 
 ### Profile、授权与锁
 
-- 每次发布前必须设置唯一 `selected_domain` 并做新的只读 discovery；profile 不是 `ready-for-bluegreen` 时只能做本地准备和只读 discovery，必须停止。`canvas-bluegreen-migration-required`、`upload-bluegreen-migration-required` 和 `bootstrap-required` 都是阻塞状态，不得隐藏或绕过。
-- Profile 只有在 fresh discovery 同时证明 Shell Blue/Green、Canvas Blue/Green、Uploads Edge Blue/Green，以及该域名独立的 MinIO 容器、网络、持久目录、Bucket、凭据、对象命名空间和公开上传地址后，才能进入 `ready-for-bluegreen`。
+- 每次发布前必须设置唯一 `selected_domain` 并做新的只读 discovery；live topology status 不是 `ready-for-bluegreen` 时只能做本地准备和只读 discovery，必须停止。`canvas-bluegreen-migration-required`、`upload-bluegreen-migration-required` 和 `bootstrap-required` 都是阻塞状态，不得隐藏或绕过。
+- `process.md` 中的 `## Release State` 是 Image release 的唯一当前阶段记录；必须按 `source-prepared -> composite-prepared -> local-preparation-verified -> live-discovery-recorded -> build-host-preflight -> artifacts-built -> production-authorized -> production-loaded-verified -> candidates-healthy -> cutover-complete -> public-accepted -> closed` 顺序原子推进。被标记为 `blocked` 的 task 不得继续，必须保留修复证据后显式解除；历史描述不能替代当前阶段。
+- `Profile` 的 `Documented Status` 只是静态文档状态，绝不能作为线上拓扑事实或生产放行依据。每次远端阶段前必须在同一 task manifest 记录 selected-domain `Live Topology`：discovery domain、evidence SHA-256、UTC 观测时间、Shell/Canvas/uploads Blue/Green 与 MinIO 隔离检查；只有全部为 `ready` 且证据未过期时 `assert-live-ready` 才能产生 `ready-for-bluegreen` gate。
+- live topology 只有在 fresh discovery 同时证明 Shell Blue/Green、Canvas Blue/Green、Uploads Edge Blue/Green，以及该域名独立的 MinIO 容器、网络、持久目录、Bucket、凭据、对象命名空间和公开上传地址后，才能进入 `ready-for-bluegreen`。
 - 构建、打包、push 或调用技能都不代表生产授权。第一次生产命令前必须拥有新鲜授权，并明确点名 `root@155.103.156.90` 及允许的具体动作；需要通过 `PRODUCTION_RELEASE_AUTHORIZED=yes` 校验。未授权时不得 image load、候选启动、候选记录或 Nginx cutover。
 - 使用 `/root/.locks/new-api-release` 作为协调根，并使用窄语义锁：`build-artifact:image:<domain>:<parent-sha>:<canvas-sha>`（`newapi-16` 构建）、`image:<image-id>`（每个生产镜像）、`docker-load:global`（每次生产加载）、`domain:<domain>`（候选和回滚生命周期）、`nginx:global`（Nginx 事务及公共验证）。锁冲突必须输出 owner metadata 并以退出码 75 结束；不得隐式等待、抢锁或在构建/等待候选时持有 `nginx:global`。
 - 生产协调器文件名保持兼容：`production-image-<id>`、`production-domain-<domain>`、`production-nginx-global`；Image 额外使用 `build-artifact-image-<domain>-<parent>-<canvas>` 和 `production-docker-load-global`。New API 协调器也必须在 `docker load` 前获取全局 Docker 锁，Image 不得单方面假设其他服务参与协调。

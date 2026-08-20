@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CONTROL_SCRIPT="$SCRIPT_DIR/release-control.sh"
+CANVAS_CONTRACT_SCRIPT="$SCRIPT_DIR/validate-canvas-contract.py"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/cherry-image-release-control.XXXXXX")"
 export GIT_ALLOW_PROTOCOL=file:git:ssh:https:http
 
@@ -48,6 +49,19 @@ git -C "$CANVAS_SOURCE" push -qu origin main
 git --git-dir="$CANVAS_ORIGIN" symbolic-ref HEAD refs/heads/main
 CANVAS_COMMIT="$(git -C "$CANVAS_SOURCE" rev-parse HEAD)"
 
+# The contract validator must accept equivalent fixed-base implementations,
+# including a provider fallback after the fixed value, without accepting a
+# fallback that takes precedence over the selected-domain value.
+CANVAS_FALLBACK="$TEST_ROOT/canvas-fallback"
+mkdir -p "$CANVAS_FALLBACK/web/src/constant" "$CANVAS_FALLBACK/web/src/stores"
+cp "$CANVAS_SOURCE/web/src/constant/env.ts" "$CANVAS_FALLBACK/web/src/constant/env.ts"
+printf '%s\n' 'import { FIXED_API_BASE_URL } from "@/constant/env";' 'const OPENAI_BASE_URL = FIXED_API_BASE_URL || "https://api.openai.com";' > "$CANVAS_FALLBACK/web/src/stores/use-config-store.ts"
+python3 "$CANVAS_CONTRACT_SCRIPT" "$CANVAS_FALLBACK" gptch.cloud | grep -Fx 'canvas_contract=semantic-pass' >/dev/null || fail "fallback contract"
+printf '%s\n' 'import { FIXED_API_BASE_URL } from "@/constant/env";' 'const OPENAI_BASE_URL = "https://api.openai.com" || FIXED_API_BASE_URL;' > "$CANVAS_FALLBACK/web/src/stores/use-config-store.ts"
+expect_failure 'OPENAI_BASE_URL must prefer FIXED_API_BASE_URL' python3 "$CANVAS_CONTRACT_SCRIPT" "$CANVAS_FALLBACK" gptch.cloud
+printf '%s\n' 'import { FIXED_API_BASE_URL } from "@/constant/env";' 'const OPENAI_BASE_URL = FIXED_API_BASE_URL || "https://api.openai.com";' 'const forbidden = "https://artworkers.online";' > "$CANVAS_FALLBACK/web/src/stores/use-config-store.ts"
+expect_failure 'source contains forbidden domain artworkers.online' python3 "$CANVAS_CONTRACT_SCRIPT" "$CANVAS_FALLBACK" gptch.cloud
+
 git init --bare -q "$REPO_ORIGIN"
 git -C "$REPO" init -q
 git -C "$REPO" config user.name test
@@ -67,6 +81,8 @@ PARENT_COMMIT="$(git -C "$REPO" rev-parse HEAD)"
 
 PROFILE_OUTPUT="$(bash "$CONTROL_SCRIPT" profile --repo-root "$REPO" --domain aiunify.xyz)"
 printf '%s\n' "$PROFILE_OUTPUT" | grep -Fx 'origin=https://aiunify.xyz' >/dev/null || fail "profile origin"
+printf '%s\n' "$PROFILE_OUTPUT" | grep -Fx 'documented_status=unverified' >/dev/null || fail "documented profile status"
+printf '%s\n' "$PROFILE_OUTPUT" | grep -Fx 'live_status=not-recorded' >/dev/null || fail "profile has no live topology"
 printf '%s\n' "$PROFILE_OUTPUT" | grep -Fx 'remote_actions=none' >/dev/null || fail "profile remote boundary"
 
 bash "$CONTROL_SCRIPT" prepare-matrix --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --task-prefix matrix --source-ref "$PARENT_COMMIT" >/dev/null
@@ -85,6 +101,44 @@ for domain in gptch.cloud artworkers.online aiunify.xyz; do
     test "$(git -C "$worktree/vendor/infinite-canvas" rev-parse HEAD)" = "$CANVAS_COMMIT" || fail "Canvas pair for $domain"
     test -z "$(git -C "$worktree" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" || fail "worktree is dirty for $domain"
 done
+
+STATE_TASK="state-machine"
+STATE_MANIFEST="$STATE/$STATE_TASK/process.md"
+bash "$CONTROL_SCRIPT" prepare-worktree --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$STATE_TASK" --domain gptch.cloud --source-ref "$PARENT_COMMIT" >/dev/null
+grep -Fx -- '- Current Phase: source-prepared' "$STATE_MANIFEST" >/dev/null || fail 'source-prepared release state'
+bash "$CONTROL_SCRIPT" prepare-composite --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$STATE_TASK" --domain gptch.cloud >/dev/null
+grep -Fx -- '- Current Phase: composite-prepared' "$STATE_MANIFEST" >/dev/null || fail 'composite-prepared release state'
+DRY_RUN_OUTPUT="$(bash "$CONTROL_SCRIPT" dry-run --repo-root "$REPO" --state-root "$STATE" --task-id "$STATE_TASK" --phase local-preparation)"
+printf '%s\n' "$DRY_RUN_OUTPUT" | grep -Fx 'current_phase=local-preparation-verified' >/dev/null || fail 'dry-run state output'
+grep -Fx -- '- Current Phase: local-preparation-verified' "$STATE_MANIFEST" >/dev/null || fail 'local-preparation-verified release state'
+expect_failure 'prepare-composite is not allowed at release phase local-preparation-verified' bash "$CONTROL_SCRIPT" prepare-composite --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --artifact-root "$TEST_ROOT/artifacts" --task-id "$STATE_TASK" --domain gptch.cloud
+
+LIVE_EVIDENCE="$TEST_ROOT/live-topology.env"
+LIVE_OBSERVED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+printf '%s\n' \
+    'domain=gptch.cloud' \
+    "observed_at=$LIVE_OBSERVED_AT" \
+    'shell_bluegreen=ready' \
+    'canvas_bluegreen=ready' \
+    'uploads_bluegreen=ready' \
+    'minio_isolation=ready' >"$LIVE_EVIDENCE"
+LIVE_RECORD_OUTPUT="$(bash "$CONTROL_SCRIPT" record-live-topology --repo-root "$REPO" --state-root "$STATE" --task-id "$STATE_TASK" --domain gptch.cloud --evidence-file "$LIVE_EVIDENCE")"
+printf '%s\n' "$LIVE_RECORD_OUTPUT" | grep -Fx 'documented_status=unverified' >/dev/null || fail 'documented status remains separate'
+printf '%s\n' "$LIVE_RECORD_OUTPUT" | grep -Fx 'live_status=ready-for-bluegreen' >/dev/null || fail 'ready live topology status'
+grep -Fx -- '- Current Phase: live-discovery-recorded' "$STATE_MANIFEST" >/dev/null || fail 'live topology advances release phase'
+LIVE_STATUS_OUTPUT="$(bash "$CONTROL_SCRIPT" live-status --repo-root "$REPO" --state-root "$STATE" --task-id "$STATE_TASK" --domain gptch.cloud)"
+printf '%s\n' "$LIVE_STATUS_OUTPUT" | grep -Fx 'live_status=ready-for-bluegreen' >/dev/null || fail 'live status report'
+bash "$CONTROL_SCRIPT" assert-live-ready --repo-root "$REPO" --state-root "$STATE" --task-id "$STATE_TASK" --domain gptch.cloud --max-age-seconds 60 >/dev/null
+
+printf '%s\n' \
+    'domain=gptch.cloud' \
+    'observed_at=2000-01-01T00:00:00Z' \
+    'shell_bluegreen=ready' \
+    'canvas_bluegreen=ready' \
+    'uploads_bluegreen=ready' \
+    'minio_isolation=ready' >"$LIVE_EVIDENCE"
+bash "$CONTROL_SCRIPT" record-live-topology --repo-root "$REPO" --state-root "$STATE" --task-id "$STATE_TASK" --domain gptch.cloud --evidence-file "$LIVE_EVIDENCE" >/dev/null
+expect_failure 'live topology evidence is stale' bash "$CONTROL_SCRIPT" assert-live-ready --repo-root "$REPO" --state-root "$STATE" --task-id "$STATE_TASK" --domain gptch.cloud --max-age-seconds 60
 
 expect_failure 'duplicate matrix domain: gptch.cloud' bash "$CONTROL_SCRIPT" prepare-matrix --repo-root "$REPO" --state-root "$STATE" --worktree-root "$WORKTREES" --task-prefix duplicate --source-ref "$PARENT_COMMIT" --domains gptch.cloud,gptch.cloud
 

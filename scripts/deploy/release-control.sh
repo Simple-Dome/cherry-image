@@ -3,6 +3,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+STATE_SCRIPT="$SCRIPT_DIR/release-state.sh"
 RELEASE_WORKTREE_ROOT="${RELEASE_WORKTREE_ROOT:-$REPO_ROOT/.release-worktrees}"
 RELEASE_ARTIFACT_ROOT="${RELEASE_ARTIFACT_ROOT:-$REPO_ROOT/.release-artifacts}"
 STATE_ROOT="${RELEASE_STATE_ROOT:-$REPO_ROOT/.agents/state/tasks}"
@@ -14,6 +16,8 @@ SOURCE_REF=""
 PHASE=""
 TASK_PREFIX=""
 MATRIX_DOMAINS=""
+EVIDENCE_FILE=""
+MAX_AGE_SECONDS="${LIVE_TOPOLOGY_MAX_AGE_SECONDS:-1800}"
 
 die() {
     printf 'release-control: %s\n' "$*" >&2
@@ -28,6 +32,9 @@ Usage:
   scripts/deploy/release-control.sh prepare-matrix --task-prefix <prefix> --source-ref <40-char-sha> [--domains <csv>]
   scripts/deploy/release-control.sh prepare-composite --task-id <id> --domain <domain>
   scripts/deploy/release-control.sh dry-run --task-id <id> --phase local-preparation
+  scripts/deploy/release-control.sh record-live-topology --task-id <id> --domain <domain> --evidence-file <path>
+  scripts/deploy/release-control.sh live-status --task-id <id> --domain <domain> [--max-age-seconds <seconds>]
+  scripts/deploy/release-control.sh assert-live-ready --task-id <id> --domain <domain> [--max-age-seconds <seconds>]
 
 This controller only prepares local source evidence. It never builds images,
 contacts production, transfers archives, starts containers, or changes Nginx.
@@ -59,6 +66,16 @@ parse_common_args() {
             --phase)
                 require_value "$1" "${2:-}"
                 PHASE="$2"
+                shift 2
+                ;;
+            --evidence-file)
+                require_value "$1" "${2:-}"
+                EVIDENCE_FILE="$2"
+                shift 2
+                ;;
+            --max-age-seconds)
+                require_value "$1" "${2:-}"
+                MAX_AGE_SECONDS="$2"
                 shift 2
                 ;;
             --repo-root)
@@ -232,11 +249,9 @@ canvas_gitlink_sha() {
 
 assert_canvas_openai_base() {
     local canvas_dir="$1"
-    grep -qF 'export const FIXED_API_BASE_URL = (import.meta.env.VITE_FIXED_API_BASE_URL || "").trim().replace(/\/+$/, "");' "$canvas_dir/web/src/constant/env.ts" || die "Canvas source must expose VITE_FIXED_API_BASE_URL"
-    grep -qF 'const OPENAI_BASE_URL = FIXED_API_BASE_URL;' "$canvas_dir/web/src/stores/use-config-store.ts" || die "Canvas source must derive OPENAI_BASE_URL from VITE_FIXED_API_BASE_URL"
+    python3 "$SCRIPT_DIR/validate-canvas-contract.py" "$canvas_dir" "$DOMAIN" || die "Canvas source failed semantic domain contract"
     grep -qE '^[[:space:]]*ARG VITE_FIXED_API_BASE_URL=' "$canvas_dir/Dockerfile" || die "Canvas Dockerfile must declare VITE_FIXED_API_BASE_URL"
     grep -qE '^[[:space:]]*ENV VITE_FIXED_API_BASE_URL=\$\{VITE_FIXED_API_BASE_URL\}' "$canvas_dir/Dockerfile" || die "Canvas Dockerfile must export VITE_FIXED_API_BASE_URL"
-    ! grep -R --include='*.ts' --include='*.tsx' --exclude-dir=.git -q 'https://artworkers\.online' "$canvas_dir/web/src" || die "Canvas source must not hardcode artworkers.online"
 }
 
 assert_canvas_subpath_contract() {
@@ -278,15 +293,76 @@ read_manifest_value() {
     sed -n "s/^- ${label}: //p" "$(manifest_path)" | head -n 1
 }
 
+live_topology_value() {
+    local label="$1"
+    awk -v label="$label" '
+        /^## Live Topology$/ { capture = 1; next }
+        capture && /^## Artifacts$/ { exit }
+        capture && index($0, "- " label ": ") == 1 {
+            print substr($0, length(label) + 5)
+            exit
+        }
+    ' "$(manifest_path)"
+}
+
+release_state_phase() {
+    "$STATE_SCRIPT" show --manifest "$(manifest_path)" | sed -n 's/^current_phase=//p'
+}
+
+initialize_release_state() {
+    local parent_sha="$1" canvas_sha="$2"
+    "$STATE_SCRIPT" init --manifest "$(manifest_path)" --phase source-prepared --evidence "source-pair:$parent_sha:$canvas_sha" >/dev/null
+}
+
+assert_release_state_phase() {
+    local expected_phase="$1" action="$2" current
+    current="$(release_state_phase)"
+    [ "$current" = "$expected_phase" ] || die "$action is not allowed at release phase $current; expected $expected_phase"
+    "$STATE_SCRIPT" assert --manifest "$(manifest_path)" --phase "$expected_phase" --status active >/dev/null
+}
+
+assert_release_state_transitionable() {
+    local from_phase="$1" to_phase="$2" action="$3" current
+    current="$(release_state_phase)"
+    case "$current" in
+        "$from_phase"|"$to_phase")
+            "$STATE_SCRIPT" assert --manifest "$(manifest_path)" --phase "$current" --status active >/dev/null
+            ;;
+        *)
+            die "$action is not allowed at release phase $current; expected $from_phase or $to_phase"
+            ;;
+    esac
+}
+
+advance_release_state() {
+    local from_phase="$1" to_phase="$2" evidence="$3" action="$4" current
+    current="$(release_state_phase)"
+    case "$current" in
+        "$from_phase")
+            "$STATE_SCRIPT" transition --manifest "$(manifest_path)" --to "$to_phase" --evidence "$evidence" >/dev/null
+            ;;
+        "$to_phase")
+            "$STATE_SCRIPT" assert --manifest "$(manifest_path)" --phase "$to_phase" --status active >/dev/null
+            ;;
+        *)
+            die "$action is not allowed at release phase $current; expected $from_phase or $to_phase"
+            ;;
+    esac
+}
+
 write_manifest() {
     local parent_sha="$1" canvas_sha="$2" worktree="$3" artifact_dir="$4" archive="$artifact_dir/source-composite.tar"
-    local archive_sha="pending" shell_dockerfile_sha canvas_dockerfile_sha origin release_ref
+    local archive_sha="pending" shell_dockerfile_sha canvas_dockerfile_sha origin release_ref existing_state="" existing_live_topology=""
     shell_dockerfile_sha="$(shasum -a 256 "$worktree/Dockerfile" | awk '{print $1}')"
     canvas_dockerfile_sha="$(shasum -a 256 "$worktree/$CANVAS_PATH/Dockerfile" | awk '{print $1}')"
     [ -f "$archive" ] && archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
     origin="$(domain_origin)"
     release_ref="$(release_ref_name "$DOMAIN" "$TASK_ID" "$parent_sha")"
     mkdir -p "$(task_state_dir)"
+    if [ -f "$(manifest_path)" ]; then
+        existing_state="$(awk '/^## Release State$/ { state = 1 } state { print }' "$(manifest_path)")"
+        existing_live_topology="$(awk '/^## Live Topology$/ { capture = 1 } capture && /^## Artifacts$/ { exit } capture { print }' "$(manifest_path)")"
+    fi
     cat >"$(manifest_path)" <<EOF
 # $DOMAIN Image Release Manifest
 
@@ -309,8 +385,28 @@ write_manifest() {
 - SHA-256: $archive_sha
 
 ## Profile
-- Status: unverified; fresh selected-domain discovery must report ready-for-bluegreen before any remote phase.
+- Documented Status: unverified
 - Allowed Routes: /image/, /canvas/, /canvas-uploads/
+
+EOF
+    if [ -n "$existing_live_topology" ]; then
+        printf '%s\n' "$existing_live_topology" >>"$(manifest_path)"
+    else
+        cat >>"$(manifest_path)" <<EOF
+
+## Live Topology
+- Live Status: not-recorded
+- Discovery Domain: pending
+- Evidence SHA-256: pending
+- Observed At: pending
+- Shell Blue/Green: unverified
+- Canvas Blue/Green: unverified
+- Uploads Blue/Green: unverified
+- MinIO Isolation: unverified
+
+EOF
+    fi
+    cat >>"$(manifest_path)" <<EOF
 
 ## Artifacts
 - Shell Image: pending
@@ -321,6 +417,7 @@ write_manifest() {
 - Candidate Topology: pending discovery
 - Rollback: no production action has been authorized or performed
 EOF
+    [ -z "$existing_state" ] || printf '\n%s\n' "$existing_state" >>"$(manifest_path)"
 }
 
 prepare_worktree() {
@@ -349,6 +446,7 @@ prepare_worktree() {
 
     ensure_release_ref "$DOMAIN" "$TASK_ID" "$parent_sha" >/dev/null
     write_manifest "$parent_sha" "$canvas_sha" "$worktree" "$artifact_dir"
+    initialize_release_state "$parent_sha" "$canvas_sha"
     printf 'prepared_worktree=%s\nparent_commit=%s\ncanvas_commit=%s\nmanifest=%s\n' "$worktree" "$parent_sha" "$canvas_sha" "$(manifest_path)"
 }
 
@@ -360,7 +458,147 @@ profile() {
     printf 'domain=%s\norigin=%s\nallowed_paths=/image/,/canvas/,/canvas-uploads/\n' "$DOMAIN" "$origin"
     printf 'shell_build_args=VITE_BASE=/image/,VITE_FIXED_API_BASE_URL=%s\n' "$origin"
     printf 'canvas_build_args=VITE_BASE=/canvas/,VITE_FIXED_API_BASE_URL=%s\n' "$origin"
-    printf 'profile_status=unverified\nprofile_blockers=fresh-discovery-required\nremote_actions=none\n'
+    printf 'documented_status=unverified\nlive_status=not-recorded\ntopology_gate=requires-fresh-live-discovery\nremote_actions=none\n'
+}
+
+evidence_value() {
+    local key="$1" count
+    count="$(grep -c "^${key}=" "$EVIDENCE_FILE" || true)"
+    [ "$count" = 1 ] || die "live topology evidence must contain exactly one $key entry"
+    sed -n "s/^${key}=//p" "$EVIDENCE_FILE"
+}
+
+validate_topology_check() {
+    case "$1" in
+        ready|not-ready|unknown) ;;
+        *) die "live topology checks must be ready, not-ready, or unknown" ;;
+    esac
+}
+
+validate_observed_at() {
+    local observed_at="$1"
+    [[ "$observed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || die "Observed At must be an RFC 3339 UTC timestamp"
+    python3 - "$observed_at" <<'PY' >/dev/null || die "Observed At is not a valid UTC timestamp"
+from datetime import datetime
+import sys
+
+datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ")
+PY
+}
+
+topology_age_seconds() {
+    python3 - "$1" <<'PY'
+from datetime import datetime, timezone
+import sys
+
+observed_at = datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+print(int((datetime.now(timezone.utc) - observed_at).total_seconds()))
+PY
+}
+
+validate_max_age_seconds() {
+    [[ "$MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "max age seconds must be a positive integer"
+}
+
+write_live_topology() {
+    local status="$1" discovery_domain="$2" evidence_sha="$3" observed_at="$4"
+    local shell_status="$5" canvas_status="$6" uploads_status="$7" minio_status="$8"
+    local prefix suffix tmp manifest_dir
+    manifest_dir="$(cd "$(dirname "$(manifest_path)")" && pwd -P)"
+    prefix="$(mktemp "$manifest_dir/.live-topology-prefix.XXXXXX")"
+    suffix="$(mktemp "$manifest_dir/.live-topology-suffix.XXXXXX")"
+    tmp="$(mktemp "$manifest_dir/.live-topology.XXXXXX")"
+    trap "rm -f '$prefix' '$suffix' '$tmp'" EXIT
+
+    awk '/^## Live Topology$/ { exit } { print }' "$(manifest_path)" >"$prefix"
+    awk '/^## Artifacts$/ { copy = 1 } copy { print }' "$(manifest_path)" >"$suffix"
+    {
+        cat "$prefix"
+        printf '\n## Live Topology\n'
+        printf '%s\n' "- Live Status: $status"
+        printf '%s\n' "- Discovery Domain: $discovery_domain"
+        printf '%s\n' "- Evidence SHA-256: $evidence_sha"
+        printf '%s\n' "- Observed At: $observed_at"
+        printf '%s\n' "- Shell Blue/Green: $shell_status"
+        printf '%s\n' "- Canvas Blue/Green: $canvas_status"
+        printf '%s\n' "- Uploads Blue/Green: $uploads_status"
+        printf '%s\n' "- MinIO Isolation: $minio_status"
+        printf '\n'
+        cat "$suffix"
+    } >"$tmp"
+    mv "$tmp" "$(manifest_path)"
+    rm -f "$prefix" "$suffix"
+    trap - EXIT
+}
+
+record_live_topology() {
+    require_repo_root
+    validate_task
+    validate_domain
+    [ -f "$(manifest_path)" ] || die "run prepare-worktree first"
+    assert_manifest_domain
+    assert_release_state_transitionable local-preparation-verified live-discovery-recorded record-live-topology
+    [ -n "$EVIDENCE_FILE" ] || die "--evidence-file is required"
+    [ -f "$EVIDENCE_FILE" ] || die "live topology evidence does not exist: $EVIDENCE_FILE"
+
+    local discovery_domain observed_at shell_status canvas_status uploads_status minio_status evidence_sha live_status
+    discovery_domain="$(evidence_value domain)"
+    [ "$discovery_domain" = "$DOMAIN" ] || die "live topology evidence domain does not match requested domain"
+    observed_at="$(evidence_value observed_at)"
+    validate_observed_at "$observed_at"
+    shell_status="$(evidence_value shell_bluegreen)"
+    canvas_status="$(evidence_value canvas_bluegreen)"
+    uploads_status="$(evidence_value uploads_bluegreen)"
+    minio_status="$(evidence_value minio_isolation)"
+    validate_topology_check "$shell_status"
+    validate_topology_check "$canvas_status"
+    validate_topology_check "$uploads_status"
+    validate_topology_check "$minio_status"
+    evidence_sha="$(shasum -a 256 "$EVIDENCE_FILE" | awk '{print $1}')"
+    live_status=not-ready
+    if [ "$shell_status" = ready ] && [ "$canvas_status" = ready ] && [ "$uploads_status" = ready ] && [ "$minio_status" = ready ]; then
+        live_status=ready-for-bluegreen
+    fi
+    write_live_topology "$live_status" "$discovery_domain" "$evidence_sha" "$observed_at" "$shell_status" "$canvas_status" "$uploads_status" "$minio_status"
+    advance_release_state local-preparation-verified live-discovery-recorded "live-topology-sha256:$evidence_sha" record-live-topology
+    printf 'documented_status=%s\nlive_status=%s\nlive_evidence_sha256=%s\nremote_actions=none\n' "$(read_manifest_value 'Documented Status')" "$live_status" "$evidence_sha"
+}
+
+live_status() {
+    require_repo_root
+    validate_task
+    validate_domain
+    [ -f "$(manifest_path)" ] || die "run prepare-worktree first"
+    assert_manifest_domain
+    printf 'documented_status=%s\nlive_status=%s\nlive_evidence_sha256=%s\nlive_observed_at=%s\n' \
+        "$(read_manifest_value 'Documented Status')" "$(live_topology_value 'Live Status')" "$(live_topology_value 'Evidence SHA-256')" "$(live_topology_value 'Observed At')"
+}
+
+assert_live_ready() {
+    require_repo_root
+    validate_task
+    validate_domain
+    validate_max_age_seconds
+    [ -f "$(manifest_path)" ] || die "run prepare-worktree first"
+    assert_manifest_domain
+
+    local live_domain live_status evidence_sha observed_at age_seconds check
+    live_domain="$(live_topology_value 'Discovery Domain')"
+    live_status="$(live_topology_value 'Live Status')"
+    evidence_sha="$(live_topology_value 'Evidence SHA-256')"
+    observed_at="$(live_topology_value 'Observed At')"
+    [ "$live_domain" = "$DOMAIN" ] || die "live topology discovery domain does not match requested domain"
+    [ "$live_status" = ready-for-bluegreen ] || die "live topology status is $live_status; fresh discovery must report ready-for-bluegreen"
+    [[ "$evidence_sha" =~ ^[0-9a-f]{64}$ ]] || die "live topology evidence SHA-256 is missing or invalid"
+    validate_observed_at "$observed_at"
+    age_seconds="$(topology_age_seconds "$observed_at")"
+    [ "$age_seconds" -ge 0 ] || die "live topology observation is in the future"
+    [ "$age_seconds" -le "$MAX_AGE_SECONDS" ] || die "live topology evidence is stale: ${age_seconds}s exceeds ${MAX_AGE_SECONDS}s"
+    for check in 'Shell Blue/Green' 'Canvas Blue/Green' 'Uploads Blue/Green' 'MinIO Isolation'; do
+        [ "$(live_topology_value "$check")" = ready ] || die "live topology check is not ready: $check"
+    done
+    printf 'documented_status=%s\nlive_status=%s\nlive_evidence_sha256=%s\nlive_evidence_age_seconds=%s\ntopology_gate=ready-for-bluegreen\n' \
+        "$(read_manifest_value 'Documented Status')" "$live_status" "$evidence_sha" "$age_seconds"
 }
 
 prepare_matrix() {
@@ -402,6 +640,7 @@ prepare_composite() {
     [ -f "$(manifest_path)" ] || die "run prepare-worktree first"
     assert_manifest_domain
     assert_manifest_release_ref
+    assert_release_state_phase source-prepared prepare-composite
     parent_sha="$(read_manifest_value 'Parent Commit')"
     canvas_sha="$(read_manifest_value 'Canvas Gitlink Commit')"
     worktree="$(read_manifest_value 'Worktree')"
@@ -418,6 +657,7 @@ prepare_composite() {
     git -C "$worktree/$CANVAS_PATH" archive "$canvas_sha" | tar -xf - -C "$context/$CANVAS_PATH"
     tar -cf "$archive" -C "$context" .
     write_manifest "$parent_sha" "$canvas_sha" "$worktree" "$artifact_dir"
+    advance_release_state source-prepared composite-prepared "archive-sha256:$(shasum -a 256 "$archive" | awk '{print $1}')" prepare-composite
     printf 'composite_archive=%s\nsha256=%s\n' "$archive" "$(shasum -a 256 "$archive" | awk '{print $1}')"
 }
 
@@ -426,6 +666,7 @@ dry_run() {
     validate_task
     [ "$PHASE" = "local-preparation" ] || die "only --phase local-preparation is permitted; remote release phases require a ready profile and separate production authorization"
     [ -f "$(manifest_path)" ] || die "run prepare-worktree first"
+    assert_release_state_phase composite-prepared dry-run
     local parent_sha worktree manifest_domain
     parent_sha="$(read_manifest_value 'Parent Commit')"
     worktree="$(read_manifest_value 'Worktree')"
@@ -435,7 +676,8 @@ dry_run() {
     validate_domain
     assert_manifest_release_ref
     assert_prepared_pair "$worktree" "$parent_sha"
-    printf 'dry_run=local-preparation\ntask_id=%s\ndomain=%s\nparent_commit=%s\ncanvas_commit=%s\nstatus=ready-for-build-host-preflight\nremote_actions=none\n' "$TASK_ID" "$DOMAIN" "$parent_sha" "$(canvas_gitlink_sha "$parent_sha")"
+    advance_release_state composite-prepared local-preparation-verified "prepared-pair:$parent_sha:$(canvas_gitlink_sha "$parent_sha")" dry-run
+    printf 'dry_run=local-preparation\ntask_id=%s\ndomain=%s\nparent_commit=%s\ncanvas_commit=%s\ncurrent_phase=local-preparation-verified\nstatus=ready-for-build-host-preflight\nremote_actions=none\n' "$TASK_ID" "$DOMAIN" "$parent_sha" "$(canvas_gitlink_sha "$parent_sha")"
 }
 
 main() {
@@ -465,6 +707,18 @@ main() {
         dry-run)
             parse_common_args "$@"
             dry_run
+            ;;
+        record-live-topology)
+            parse_common_args "$@"
+            record_live_topology
+            ;;
+        live-status)
+            parse_common_args "$@"
+            live_status
+            ;;
+        assert-live-ready)
+            parse_common_args "$@"
+            assert_live_ready
             ;;
         -h|--help)
             usage

@@ -10,6 +10,8 @@
 + [调整] 画布生图结果改为先用 Gemini 返回的 data URL 标记成功并立即显示，后台再持久化到 IndexedDB、替换 object URL 和真实尺寸；持久化失败时保留已显示图片。
 + [调整] Shell 与 Canvas 通过构建期 `VITE_FIXED_API_BASE_URL` 绑定所选域名，浏览器配置、导入文件和分享 URL 均不能覆盖。
 + [调整] Shell 和 Canvas 支持通过 `VITE_BASE` 构建到 `/image/` 与 `/canvas/` 子路径，并与根路径服务共存。
++ [新增] Image 发布新增可恢复的分块归档传输、远端事务执行器、uploads 临时对象探针和 Canvas 域名契约语义校验。
++ [新增] Image release manifest 增加原子阶段状态机，以及与静态 Profile 分离、由 SHA 和时效约束的 live topology gate。
 
 + [新增] 图片、视频、文本、音频与生成配置节点的编辑面板支持展开编辑，并展示已连接参考图片缩略图。
 + [修复] 画布缩放和平移时视频设置面板的尺寸与锚点位置不同步的问题。
